@@ -1,6 +1,33 @@
-import { GoogleLoginButton } from '@/components/auth/google-login-button'
+import { redirect } from 'next/navigation'
 
-export default function LoginPage() {
+import { GoogleLoginButton } from '@/components/auth/google-login-button'
+import { createClient } from '@/lib/supabase/server'
+
+function getSafeNextPath(next: string | string[] | undefined) {
+  if (typeof next !== 'string' || !next.startsWith('/')) {
+    return '/dashboard'
+  }
+
+  return next.startsWith('//') ? '/dashboard' : next
+}
+
+type LoginPageProps = {
+  searchParams: Promise<{
+    next?: string | string[]
+  }>
+}
+
+export default async function LoginPage({ searchParams }: LoginPageProps) {
+  const [{ next }, supabase] = await Promise.all([searchParams, createClient()])
+  const safeNextPath = getSafeNextPath(next)
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  if (user) {
+    redirect(safeNextPath)
+  }
+
   return (
     <main className="min-h-screen overflow-hidden bg-zinc-50 px-6 py-10 text-zinc-950">
       <div className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-[1440px] items-center justify-center">
@@ -27,7 +54,7 @@ export default function LoginPage() {
               </div>
 
               <div className="flex w-full flex-col items-start gap-3">
-                <GoogleLoginButton />
+                <GoogleLoginButton next={safeNextPath} />
                 <GoogleLoginButton
                   label="네이버로 계속하기"
                   icon="naver"

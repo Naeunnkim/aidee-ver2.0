@@ -9,6 +9,7 @@ type GoogleLoginButtonProps = {
   icon?: 'google' | 'naver' | 'kakao'
   disabled?: boolean
   onClick?: () => void
+  next?: string
 }
 
 export function GoogleLoginButton({
@@ -16,6 +17,7 @@ export function GoogleLoginButton({
   icon = 'google',
   disabled = false,
   onClick,
+  next = '/dashboard',
 }: GoogleLoginButtonProps) {
   const [isPending, startTransition] = useTransition()
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -48,7 +50,7 @@ export function GoogleLoginButton({
       setErrorMessage(null)
 
       const supabase = createClient()
-      const redirectTo = `${window.location.origin}/auth/callback?next=/dashboard`
+      const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {

@@ -1,7 +1,13 @@
 import { google } from '@ai-sdk/google'
-import { generateObject, generateText, type ModelMessage } from 'ai'
+import { generateObject, generateText, tool, type ModelMessage } from 'ai'
 import { createClient } from '@supabase/supabase-js'
+import { z } from 'zod'
 
+import {
+  appendGeneratedImagesBlock,
+  type GeneratedImageBlock,
+  generateNanoBananaImages,
+} from '@/lib/image-generation'
 import { SYSTEM_PROMPT_TEMPLATE } from '@/lib/prompts'
 import { RFP_DOCUMENT_SCHEMA, buildRfpObjectPrompt } from '@/lib/rfp'
 import { type StageKey, isKnownStageKey } from '@/lib/study'
@@ -61,8 +67,53 @@ type StageMeta = {
 
 const DEFAULT_STAGE_KEY: StageKey = 'step_1_idea'
 
+function isGeneratedImageBlock(value: unknown): value is GeneratedImageBlock {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'images' in value &&
+    Array.isArray(value.images) &&
+    value.images.every((image) => typeof image === 'string') &&
+    'prompt' in value &&
+    typeof value.prompt === 'string' &&
+    'model' in value &&
+    typeof value.model === 'string'
+  )
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function isImageGenerationRequest(text: string) {
+  const normalized = text.toLowerCase()
+  return [
+    '이미지',
+    '시안',
+    '렌더',
+    '무드보드',
+    '비주얼',
+    'visual',
+    'render',
+    'concept image',
+    'image',
+    '생성',
+    '그려',
+    '보여줘',
+    '만들어줘',
+  ].some((keyword) => normalized.includes(keyword))
+}
+
+function extractRequestedImageCount(text: string) {
+  const digitMatch = text.match(/([1-4])\s*장/)
+  if (digitMatch) {
+    return Number(digitMatch[1])
+  }
+
+  if (text.includes('두 장') || text.includes('2개')) return 2
+  if (text.includes('세 장') || text.includes('3개')) return 3
+  if (text.includes('네 장') || text.includes('4개')) return 4
+  return 1
 }
 
 function extractReferenceAnalysis(
@@ -268,6 +319,38 @@ function buildConversationText(messages: ModelMessage[]) {
     .join('\n\n')
 }
 
+function buildFallbackImagePrompt({
+  project,
+  referenceImages,
+  userRequest,
+}: {
+  project: ProjectRecord | null
+  referenceImages: ReferenceImageRecord[]
+  userRequest: string
+}) {
+  const requirements = JSON.stringify(project?.requirements ?? {}, null, 2)
+  const guidelineBlock = buildReferenceGuidelineBlock(referenceImages)
+
+  return [
+    'Create a polished product design visualization based on the following project context.',
+    '',
+    `Project title: ${project?.title || 'Untitled project'}`,
+    `User request: ${userRequest}`,
+    '',
+    'Project requirements:',
+    requirements,
+    '',
+    'Reference design guidelines:',
+    guidelineBlock,
+    '',
+    'Output direction:',
+    '- preserve the reference image mood, materials, shape language, and detail points when relevant',
+    '- generate a high-quality product concept/render image',
+    '- no text overlay, no UI, no watermark',
+    '- realistic studio or interior product presentation',
+  ].join('\n')
+}
+
 function buildInitialPrompt(project: ProjectRecord | null) {
   const title = project?.title || '새 프로젝트'
 
@@ -361,6 +444,9 @@ ${SYSTEM_PROMPT_TEMPLATE}
 - 사용자가 별도로 반대하지 않는 한, 레퍼런스 이미지 분석에서 드러난 무드/재질/형태/디테일 방향을 보존하는 쪽으로 제안하세요.
 - 이 시스템은 채팅 본문을 PDF 파일로 내보낼 수 있습니다.
 - 따라서 모델의 일반적 한계 설명, 예를 들어 "PDF 파일은 직접 생성할 수 없다", "텍스트를 복사해서 사용해달라", "파일 형태로 제공할 수 없다" 같은 문구를 절대 출력하지 마세요.
+- 필요할 때는 generate_design_image 도구를 사용해 Nano Banana 이미지 생성을 요청할 수 있습니다.
+- 사용자가 이미지 생성, 컨셉 시각화, 무드보드, 디자인 시안, 레퍼런스 합성, 최종 디자인 렌더를 원하면 이 도구를 적극적으로 사용하세요.
+- 도구를 사용한 경우, 본문에서는 이미지 생성이 완료되었다는 설명과 함께 무엇을 시각화했는지 짧게 요약하세요.
 
 ${projectContext}
 
@@ -519,10 +605,56 @@ export async function POST(req: Request) {
         ]
       : normalizedMessages
 
+    let generatedImagePayload: GeneratedImageBlock | null = null
+    const lastUserMessage =
+      [...normalizedMessages]
+        .reverse()
+        .find((message) => message.role === 'user')?.content ?? ''
+
     const result = await generateText({
       model: google('gemini-2.5-flash'),
       system,
       messages,
+      stopWhen: ({ steps }) =>
+        steps.length >= 1 &&
+        steps[steps.length - 1].toolCalls.length === 0,
+      tools: {
+        generate_design_image: tool({
+          description:
+            'Generate product concept or final design images with Gemini Nano Banana and return data URL images.',
+          inputSchema: z.object({
+            prompt: z
+              .string()
+              .min(1)
+              .describe('Detailed image generation prompt for the desired visual'),
+            count: z
+              .number()
+              .int()
+              .min(1)
+              .max(4)
+              .default(1)
+              .describe('Number of image variations to create'),
+            model: z
+              .enum(['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview'])
+              .default('gemini-3.1-flash-image-preview')
+              .describe('Nano Banana model to use'),
+          }),
+          execute: async ({ prompt, count, model }) => {
+            generatedImagePayload = await generateNanoBananaImages({
+              prompt,
+              count,
+              model,
+            })
+
+            return {
+              status: 'success',
+              message: `${generatedImagePayload.images.length} image variation(s) generated successfully.`,
+              count: generatedImagePayload.images.length,
+              model: generatedImagePayload.model,
+            }
+          },
+        }),
+      },
     })
 
     const { cleanedText, stageMeta } = parseStageMeta(
@@ -531,6 +663,35 @@ export async function POST(req: Request) {
     )
 
     let finalText = sanitizeAssistantText(cleanedText)
+
+    if (!generatedImagePayload && isImageGenerationRequest(lastUserMessage)) {
+      try {
+        generatedImagePayload = await generateNanoBananaImages({
+          prompt: buildFallbackImagePrompt({
+            project,
+            referenceImages,
+            userRequest: lastUserMessage,
+          }),
+          count: extractRequestedImageCount(lastUserMessage),
+        })
+
+        if (!finalText.trim()) {
+          finalText =
+            '이미지를 생성했습니다. 아래 시안을 확인하고, 원하는 수정 방향이 있으면 바로 말씀해주세요.'
+        } else if (!/이미지|시안|렌더/.test(finalText)) {
+          finalText = `${finalText}\n\n이미지를 생성했습니다. 아래 시안을 확인하고 원하는 수정 방향을 알려주세요.`
+        }
+      } catch (error) {
+        console.error('Fallback Nano Banana image generation failed:', error)
+      }
+    }
+
+    if (generatedImagePayload) {
+      finalText = appendGeneratedImagesBlock({
+        text: finalText,
+        payload: generatedImagePayload,
+      })
+    }
 
     const shouldGenerateRfpJson =
       stageMeta.nextStageKey === 'step_5_rfp' &&
@@ -554,7 +715,7 @@ export async function POST(req: Request) {
           }),
         })
 
-        finalText = `${cleanedText}
+        finalText = `${finalText}
 
 <<AIDEE_RFP_JSON>>
 ${JSON.stringify(rfpObjectResult.object, null, 2)}

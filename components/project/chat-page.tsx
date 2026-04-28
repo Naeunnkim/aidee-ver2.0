@@ -8,6 +8,10 @@ import ReactMarkdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 
+import {
+  extractGeneratedImagesBlock,
+  type GeneratedImageBlock,
+} from '@/lib/image-generation'
 import PersonaCard from '@/components/project/persona-card'
 import { type RfpDocument, extractRfpJsonBlock } from '@/lib/rfp'
 import { createClient } from '@/lib/supabase/client'
@@ -24,6 +28,26 @@ type ChatMessage = {
   content: string
   seq_order?: number
   active_agent?: string | null
+  generatedImages?: string[]
+  generatedImagePrompt?: string | null
+}
+
+function normalizeAssistantMessage(message: ChatMessage) {
+  const { cleanedText: withoutImages, imageBlock } = extractGeneratedImagesBlock(
+    message.content
+  )
+  const { cleanedText, rfpJson } = extractRfpJsonBlock(withoutImages)
+
+  return {
+    normalizedMessage: {
+      ...message,
+      content: cleanedText,
+      generatedImages: imageBlock?.images ?? [],
+      generatedImagePrompt: imageBlock?.prompt ?? null,
+    } satisfies ChatMessage,
+    imageBlock,
+    rfpJson,
+  }
 }
 
 function parsePersonaData(content: string) {
@@ -116,6 +140,8 @@ export default function ChatPage({
   const [currentStageKey, setCurrentStageKey] = useState<StageKey>('step_1_idea')
   const [latestRfpJson, setLatestRfpJson] = useState<RfpDocument | null>(null)
   const [latestRfpContent, setLatestRfpContent] = useState<string | null>(null)
+  const [latestGeneratedImageBlock, setLatestGeneratedImageBlock] =
+    useState<GeneratedImageBlock | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -268,7 +294,28 @@ export default function ChatPage({
         .order('seq_order', { ascending: true })
 
       if (data) {
-        setMessages(data as ChatMessage[])
+        const normalizedMessages = (data as ChatMessage[]).map((message) =>
+          normalizeAssistantMessage(message)
+        )
+
+        const latestRfpFromHistory = [...normalizedMessages]
+          .reverse()
+          .find((message) => message.rfpJson)?.rfpJson
+        const latestImageBlockFromHistory = [...normalizedMessages]
+          .reverse()
+          .find((message) => message.imageBlock)?.imageBlock
+
+        if (latestRfpFromHistory) {
+          setLatestRfpJson(latestRfpFromHistory)
+        }
+
+        if (latestImageBlockFromHistory) {
+          setLatestGeneratedImageBlock(latestImageBlockFromHistory)
+        }
+
+        setMessages(
+          normalizedMessages.map((message) => message.normalizedMessage)
+        )
       }
 
       setIsInitialLoading(false)
@@ -331,6 +378,31 @@ export default function ChatPage({
 
           aiContent += decoder.decode()
 
+          const { normalizedMessage, imageBlock, rfpJson } =
+            normalizeAssistantMessage({
+              id: aiMessageId,
+              role: 'assistant',
+              content: aiContent,
+            })
+
+          if (imageBlock) {
+            setLatestGeneratedImageBlock(imageBlock)
+          }
+
+          if (rfpJson) {
+            setLatestRfpJson(rfpJson)
+          }
+
+          if (
+            currentStageKey === 'step_5_rfp' ||
+            normalizedMessage.content.includes('# 제품 제안요청서') ||
+            normalizedMessage.content.includes('## 1. 프로젝트 개요')
+          ) {
+            setLatestRfpContent(normalizedMessage.content)
+          }
+
+          setMessages([normalizedMessage])
+
           if (aiContent.trim()) {
             await insertMessage({
               role: 'assistant',
@@ -339,7 +411,7 @@ export default function ChatPage({
             })
           }
 
-          await applyStageHeaders(response, aiContent)
+          await applyStageHeaders(response, normalizedMessage.content)
         } catch (error) {
           console.error(error)
         }
@@ -381,6 +453,25 @@ export default function ChatPage({
 
     if (latestRfpMessage?.content) {
       setLatestRfpContent(latestRfpMessage.content)
+    }
+  }, [messages])
+
+  useEffect(() => {
+    const latestImageMessage = [...messages]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === 'assistant' &&
+          Array.isArray(message.generatedImages) &&
+          message.generatedImages.length > 0
+      )
+
+    if (latestImageMessage?.generatedImages?.length) {
+      setLatestGeneratedImageBlock({
+        images: latestImageMessage.generatedImages,
+        prompt: latestImageMessage.generatedImagePrompt ?? '',
+        model: 'gemini-nanobanana',
+      })
     }
   }, [messages])
 
@@ -484,35 +575,43 @@ export default function ChatPage({
 
     aiContent += decoder.decode()
 
-    const { cleanedText, rfpJson } = extractRfpJsonBlock(aiContent)
+    const { normalizedMessage, imageBlock, rfpJson } = normalizeAssistantMessage({
+      id: aiMessageId,
+      role: 'assistant',
+      content: aiContent,
+    })
 
     if (rfpJson) {
       setLatestRfpJson(rfpJson)
     }
 
+    if (imageBlock) {
+      setLatestGeneratedImageBlock(imageBlock)
+    }
+
     if (
       stageKeyForRequest === 'step_5_rfp' ||
-      cleanedText.includes('# 제품 제안요청서') ||
-      cleanedText.includes('## 1. 프로젝트 개요')
+      normalizedMessage.content.includes('# 제품 제안요청서') ||
+      normalizedMessage.content.includes('## 1. 프로젝트 개요')
     ) {
-      setLatestRfpContent(cleanedText)
+      setLatestRfpContent(normalizedMessage.content)
     }
 
     setMessages((prev) =>
       prev.map((msg) =>
-        msg.id === aiMessageId ? { ...msg, content: cleanedText } : msg
+        msg.id === aiMessageId ? normalizedMessage : msg
       )
     )
 
-    if (cleanedText.trim()) {
+    if (aiContent.trim()) {
       await insertMessage({
         role: 'assistant',
-        content: cleanedText,
+        content: aiContent,
         activeAgent: 'aidee',
       })
     }
 
-    await applyStageHeaders(response, cleanedText)
+    await applyStageHeaders(response, normalizedMessage.content)
   }
 
   const onFormSubmit = async (e: React.FormEvent) => {
@@ -731,8 +830,13 @@ export default function ChatPage({
             <div className="space-y-1">
               <p className="text-sm font-medium text-sky-700">{projectTitle}</p>
               <p className="text-xs text-zinc-400">현재 단계: {currentStageKey}</p>
+              {latestGeneratedImageBlock?.images.length ? (
+                <p className="text-xs text-zinc-400">
+                  최근 생성 이미지: {latestGeneratedImageBlock.images.length}장
+                </p>
+              ) : null}
             </div>
-            {currentStageKey === 'step_5_rfp' ? (
+            {currentStageKey === 'step_5_rfp' || latestRfpContent ? (
               <button
                 type="button"
                 onClick={() => void handleRfpDownload()}
@@ -816,6 +920,34 @@ export default function ChatPage({
                     </ReactMarkdown>
                   </div>
                 </div>
+                {m.role === 'assistant' && m.generatedImages?.length ? (
+                  <div className="mt-3 w-full max-w-[760px] space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs font-medium text-slate-500">
+                        생성된 이미지 {m.generatedImages.length}장
+                      </p>
+                      {m.generatedImagePrompt ? (
+                        <p className="max-w-[440px] truncate text-right text-[11px] text-slate-400">
+                          {m.generatedImagePrompt}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      {m.generatedImages.map((image, index) => (
+                        <div
+                          key={`${m.id}-image-${index}`}
+                          className="overflow-hidden rounded-2xl border border-slate-200 bg-white"
+                        >
+                          <img
+                            src={image}
+                            alt={`generated-${index + 1}`}
+                            className="h-full w-full object-cover"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             )
           })}

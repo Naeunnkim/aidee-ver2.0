@@ -3,6 +3,10 @@ export type StageKey =
   | 'step_2_persona'
   | 'step_2_research'
   | 'step_3_direction'
+  | 'step_4_style'
+  | 'step_5_design'
+  | 'step_6_rfp'
+  // Legacy keys kept so existing in-progress sessions do not break.
   | 'step_4_definition'
   | 'step_5_rfp'
 
@@ -43,10 +47,28 @@ export const STAGE_DEFINITIONS: Array<{
     sidebarIndex: 2,
   },
   {
-    key: 'step_5_rfp',
-    label: 'RFP 문서 생성',
+    key: 'step_4_style',
+    label: '스타일 컨셉 도출',
+    sidebarLabel: '스타일 컨셉 도출',
+    sidebarIndex: 2,
+  },
+  {
+    key: 'step_5_design',
+    label: '디자인 제안',
     sidebarLabel: '디자인 제안',
     sidebarIndex: 3,
+  },
+  {
+    key: 'step_5_rfp',
+    label: 'RFP 문서 생성',
+    sidebarLabel: '평가 및 협력업체 연결',
+    sidebarIndex: 4,
+  },
+  {
+    key: 'step_6_rfp',
+    label: '평가 및 RFP 문서 생성',
+    sidebarLabel: '평가 및 협력업체 연결',
+    sidebarIndex: 4,
   },
 ]
 

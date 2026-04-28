@@ -142,6 +142,9 @@ export default function ChatPage({
   const [latestRfpContent, setLatestRfpContent] = useState<string | null>(null)
   const [latestGeneratedImageBlock, setLatestGeneratedImageBlock] =
     useState<GeneratedImageBlock | null>(null)
+  const [selectedGeneratedImages, setSelectedGeneratedImages] = useState<
+    Record<string, number>
+  >({})
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -395,6 +398,7 @@ export default function ChatPage({
 
           if (
             currentStageKey === 'step_5_rfp' ||
+            currentStageKey === 'step_6_rfp' ||
             normalizedMessage.content.includes('# 제품 제안요청서') ||
             normalizedMessage.content.includes('## 1. 프로젝트 개요')
           ) {
@@ -591,6 +595,7 @@ export default function ChatPage({
 
     if (
       stageKeyForRequest === 'step_5_rfp' ||
+      stageKeyForRequest === 'step_6_rfp' ||
       normalizedMessage.content.includes('# 제품 제안요청서') ||
       normalizedMessage.content.includes('## 1. 프로젝트 개요')
     ) {
@@ -656,7 +661,7 @@ export default function ChatPage({
     }
 
     const userMessage = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(),
       role: 'user',
       content: actionText,
       active_agent: 'aidee',
@@ -694,6 +699,63 @@ export default function ChatPage({
           role: 'assistant',
           content:
             '리서치 단계로 넘어가는 중 오류가 발생했어요. 다시 한 번 눌러주세요.',
+        },
+      ])
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const sendGeneratedImageSelection = async (
+    messageId: string,
+    imageIndex: number,
+    prompt?: string | null
+  ) => {
+    if (isLoading) {
+      return
+    }
+
+    const actionText = [
+      `스타일 레퍼런스 ${imageIndex + 1}번을 선택합니다.`,
+      prompt ? `선택 기준 프롬프트: ${prompt}` : '',
+      '이 방향을 기준으로 다음 디자인 제안을 진행해주세요.',
+    ]
+      .filter(Boolean)
+      .join('\n')
+
+    const userMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: actionText,
+      active_agent: 'aidee',
+    }
+
+    const nextMessages = [...messages, userMessage]
+
+    setSelectedGeneratedImages((prev) => ({
+      ...prev,
+      [messageId]: imageIndex,
+    }))
+    setMessages(nextMessages)
+    setIsLoading(true)
+
+    try {
+      await insertMessage({
+        role: 'user',
+        content: actionText,
+        activeAgent: 'aidee',
+      })
+
+      await streamAssistantResponse(nextMessages, currentStageKey)
+    } catch (error) {
+      console.error('Generated image selection failed:', error)
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 2).toString(),
+          role: 'assistant',
+          content:
+            '선택 결과를 반영하는 중 오류가 발생했어요. 다시 한 번 선택해주세요.',
         },
       ])
     } finally {
@@ -836,7 +898,9 @@ export default function ChatPage({
                 </p>
               ) : null}
             </div>
-            {currentStageKey === 'step_5_rfp' || latestRfpContent ? (
+            {currentStageKey === 'step_6_rfp' ||
+            currentStageKey === 'step_5_rfp' ||
+            latestRfpContent ? (
               <button
                 type="button"
                 onClick={() => void handleRfpDownload()}
@@ -936,13 +1000,47 @@ export default function ChatPage({
                       {m.generatedImages.map((image, index) => (
                         <div
                           key={`${m.id}-image-${index}`}
-                          className="overflow-hidden rounded-2xl border border-slate-200 bg-white"
+                          className={`overflow-hidden rounded-2xl border bg-white ${
+                            selectedGeneratedImages[m.id] === index
+                              ? 'border-blue-600 ring-2 ring-blue-100'
+                              : 'border-slate-200'
+                          }`}
                         >
                           <img
                             src={image}
                             alt={`generated-${index + 1}`}
-                            className="h-full w-full object-cover"
+                            className="aspect-[4/3] w-full object-cover"
                           />
+                          {currentStageKey === 'step_4_style' ? (
+                            <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
+                              <span className="text-xs font-medium text-slate-500">
+                                레퍼런스 {index + 1}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={
+                                  isLoading ||
+                                  selectedGeneratedImages[m.id] !== undefined
+                                }
+                                onClick={() =>
+                                  void sendGeneratedImageSelection(
+                                    m.id,
+                                    index,
+                                    m.generatedImagePrompt
+                                  )
+                                }
+                                className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                                  selectedGeneratedImages[m.id] === index
+                                    ? 'bg-blue-600 text-white'
+                                    : 'bg-slate-100 text-slate-700 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-60'
+                                }`}
+                              >
+                                {selectedGeneratedImages[m.id] === index
+                                  ? '선택됨'
+                                  : '이 이미지 선택'}
+                              </button>
+                            </div>
+                          ) : null}
                         </div>
                       ))}
                     </div>

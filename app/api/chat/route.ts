@@ -67,20 +67,6 @@ type StageMeta = {
 
 const DEFAULT_STAGE_KEY: StageKey = 'step_1_idea'
 
-function isGeneratedImageBlock(value: unknown): value is GeneratedImageBlock {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'images' in value &&
-    Array.isArray(value.images) &&
-    value.images.every((image) => typeof image === 'string') &&
-    'prompt' in value &&
-    typeof value.prompt === 'string' &&
-    'model' in value &&
-    typeof value.model === 'string'
-  )
-}
-
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
@@ -351,6 +337,46 @@ function buildFallbackImagePrompt({
   ].join('\n')
 }
 
+function buildStyleReferencePrompt({
+  project,
+  referenceImages,
+  conversation,
+}: {
+  project: ProjectRecord | null
+  referenceImages: ReferenceImageRecord[]
+  conversation: string
+}) {
+  const requirements = JSON.stringify(project?.requirements ?? {}, null, 2)
+  const guidelineBlock = buildReferenceGuidelineBlock(referenceImages)
+
+  return [
+    'Create three distinct style reference images for a product design concept selection step.',
+    '',
+    `Project title: ${project?.title || 'Untitled project'}`,
+    '',
+    'Project requirements:',
+    requirements,
+    '',
+    'Conversation context:',
+    conversation,
+    '',
+    'Reference design guidelines:',
+    guidelineBlock,
+    '',
+    'Image direction:',
+    '- keep the same overall product/category and target user',
+    '- variation 1 should emphasize mood and emotional tone',
+    '- variation 2 should emphasize material, texture, and finish',
+    '- variation 3 should emphasize shape language, proportion, and detail',
+    '- no text overlay, no UI, no watermark',
+    '- high-quality style board or product concept visual suitable for user selection',
+  ].join('\n')
+}
+
+function hasStyleReferenceSelection(text: string) {
+  return /([1-3])\s*번|이미지\s*([1-3])|레퍼런스\s*([1-3])|선택|확정/.test(text)
+}
+
 function buildInitialPrompt(project: ProjectRecord | null) {
   const title = project?.title || '새 프로젝트'
 
@@ -393,25 +419,47 @@ function getStageSpecificInstruction(currentStageKey: StageKey) {
       return `
 [현재 단계 운영]
 - 지금은 STEP 3입니다.
-- 스타일 키워드, 핵심 기능, 제외할 기능, 현실 범위를 정리하는 데 집중하세요.
-- 확정 조건이 충족되면 짧게 요약하고 STEP 4로 넘어갈 수 있는 질문 1개만 하세요.
+- 감성 / 기능 / 심미 중 1순위, 핵심 가치 키워드, 덜 중요하게 가져갈 요소를 정리하세요.
+- 확정 조건이 충족되면 STEP 4 스타일 컨셉 도출로 넘어가세요.
 `.trim()
-    case 'step_4_definition':
+    case 'step_4_style':
       return `
 [현재 단계 운영]
-- 지금은 STEP 4입니다.
-- 제품 한 줄 정의, 사용자 가치 제안, 포함/제외 범위를 명확히 고정하세요.
-- 확정 조건이 충족되면 RFP 생성을 위한 마지막 확인 후 STEP 5로 넘어가세요.
+- 지금은 STEP 4 스타일 컨셉 도출 단계입니다.
+- 사용자가 선택할 수 있도록 Nano Banana 스타일 레퍼런스 이미지 3장을 생성해야 합니다.
+- 이미지 3장을 제시한 뒤에는 반드시 마음에 드는 이미지 1개 선택을 요청하고, 선택 전에는 STEP 5로 넘어가지 마세요.
+- 사용자가 이미지를 선택하면 선택된 레퍼런스를 기준으로 형태 / 색감 / 재질 중 최소 2개 방향성을 확정하고 STEP 5 디자인 제안으로 넘어가세요.
 `.trim()
-    case 'step_5_rfp':
+    case 'step_5_design':
       return `
 [현재 단계 운영]
-- 지금은 STEP 5입니다.
+- 지금은 STEP 5 디자인 제안 단계입니다.
+- STEP 4에서 선택한 스타일 레퍼런스를 기준으로 디자인 시안을 제안하세요.
+- 필요하면 generate_design_image 도구로 제품 렌더 또는 3D 시안 1~2장을 생성하세요.
+- 디자인 시안 1안과 수정 여부가 확정되기 전에는 RFP로 넘어가지 마세요.
+- 시안이 확정되면 STEP 6 RFP 문서 생성으로 넘어가세요.
+`.trim()
+    case 'step_6_rfp':
+      return `
+[현재 단계 운영]
+- 지금은 STEP 6 평가 및 RFP 문서 생성 단계입니다.
 - 정보가 충분하면 반드시 RFP 출력 템플릿대로 문서를 작성하세요.
 - 정보가 부족하면 RFP를 쓰지 말고 부족한 항목 1개만 질문하세요.
 - 시스템은 이 RFP 본문을 그대로 PDF로 저장할 수 있습니다.
 - 따라서 "PDF로는 제공할 수 없다", "파일 형태로 직접 생성할 수 없다", "복사해서 사용해달라" 같은 제한 문구를 절대 말하지 마세요.
-- 사용자가 문서 형태를 요청하면, 실제로 다운로드 가능한 문서의 본문이라고 가정하고 완성된 RFP만 제시하세요.
+`.trim()
+    case 'step_4_definition':
+      return `
+[현재 단계 운영]
+- 지금은 기존 세션의 STEP 4입니다. 새 흐름의 STEP 4 스타일 컨셉 도출로 전환하세요.
+- 스타일 레퍼런스 이미지 3장 생성과 선택을 진행하고, next_stage는 step_4_style로 설정하세요.
+`.trim()
+    case 'step_5_rfp':
+      return `
+[현재 단계 운영]
+- 지금은 기존 세션의 RFP 단계입니다.
+- 스타일 레퍼런스 선택과 디자인 시안 확정이 대화에 없으면 RFP를 생성하지 말고 STEP 4 스타일 컨셉 도출로 되돌리세요.
+- 모두 충족되어 있다면 STEP 6 RFP 문서 생성 지침을 따르세요.
 `.trim()
     default:
       return ''
@@ -456,7 +504,7 @@ ${stageInstruction}
 - 사용자에게 보여줄 실제 답변을 모두 작성한 뒤, 마지막 줄 아래에 반드시 아래 형식의 메타 블록을 추가하세요.
 - 메타 블록은 사용자에게 보여주기 위한 내용이 아니며, 형식을 절대 바꾸지 마세요.
 - current_stage와 next_stage는 다음 중 하나만 사용하세요:
-  step_1_idea, step_2_persona, step_2_research, step_3_direction, step_4_definition, step_5_rfp
+  step_1_idea, step_2_persona, step_2_research, step_3_direction, step_4_style, step_5_design, step_6_rfp, step_4_definition, step_5_rfp
 - transition은 yes 또는 no만 사용하세요.
 - reason은 짧은 영어 snake_case로 작성하세요.
 
@@ -664,7 +712,11 @@ export async function POST(req: Request) {
 
     let finalText = sanitizeAssistantText(cleanedText)
 
-    if (!generatedImagePayload && isImageGenerationRequest(lastUserMessage)) {
+    if (
+      !generatedImagePayload &&
+      currentStageKey !== 'step_4_style' &&
+      isImageGenerationRequest(lastUserMessage)
+    ) {
       try {
         generatedImagePayload = await generateNanoBananaImages({
           prompt: buildFallbackImagePrompt({
@@ -686,6 +738,33 @@ export async function POST(req: Request) {
       }
     }
 
+    if (
+      !generatedImagePayload &&
+      (currentStageKey === 'step_4_style' ||
+        stageMeta.nextStageKey === 'step_4_style') &&
+      !hasStyleReferenceSelection(lastUserMessage)
+    ) {
+      try {
+        generatedImagePayload = await generateNanoBananaImages({
+          prompt: buildStyleReferencePrompt({
+            project,
+            referenceImages,
+            conversation: buildConversationText(messages),
+          }),
+          count: 3,
+        })
+
+        if (!finalText.trim()) {
+          finalText =
+            '스타일 레퍼런스 3장을 생성했습니다. 마음에 드는 방향을 하나 선택해주세요.'
+        } else if (!/선택|이미지|레퍼런스/.test(finalText)) {
+          finalText = `${finalText}\n\n스타일 레퍼런스 3장을 생성했습니다. 마음에 드는 방향을 하나 선택해주세요.`
+        }
+      } catch (error) {
+        console.error('Style reference image generation failed:', error)
+      }
+    }
+
     if (generatedImagePayload) {
       finalText = appendGeneratedImagesBlock({
         text: finalText,
@@ -694,7 +773,9 @@ export async function POST(req: Request) {
     }
 
     const shouldGenerateRfpJson =
-      stageMeta.nextStageKey === 'step_5_rfp' &&
+      (stageMeta.currentStageKey === 'step_6_rfp' ||
+        stageMeta.nextStageKey === 'step_6_rfp' ||
+        stageMeta.nextStageKey === 'step_5_rfp') &&
       (cleanedText.includes('# 제품 제안요청서') ||
         cleanedText.includes('## 1. 프로젝트 개요'))
 

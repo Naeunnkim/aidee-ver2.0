@@ -8,6 +8,12 @@ import {
   type GeneratedImageBlock,
   generateNanoBananaImages,
 } from '@/lib/image-generation'
+import {
+  getExpertDefinition,
+  getExpertPrompt,
+  isExpertKey,
+  type ExpertKey,
+} from '@/lib/experts'
 import { SYSTEM_PROMPT_TEMPLATE } from '@/lib/prompts'
 import { RFP_DOCUMENT_SCHEMA, buildRfpObjectPrompt } from '@/lib/rfp'
 import { type StageKey, isKnownStageKey } from '@/lib/study'
@@ -29,6 +35,8 @@ type ChatRequestBody = {
   messages?: ChatRequestMessage[]
   projectId?: string
   currentStageKey?: StageKey
+  activeExpert?: ExpertKey
+  expertCall?: boolean
 }
 
 type NormalizedMessage = {
@@ -391,6 +399,17 @@ function buildInitialPrompt(project: ProjectRecord | null) {
   ].join('\n')
 }
 
+function buildExpertCallPrompt(expert: ExpertKey) {
+  const expertLabel = getExpertDefinition(expert).label
+
+  return [
+    `[전문가 호출: ${expertLabel}]`,
+    '현재까지의 대화 내용과 프로젝트 정보를 바탕으로 답변하세요.',
+    '새로운 질문을 임의로 만들지 말고, 지금 시점에서 이 전문가 관점으로 판단해야 할 내용을 정리하세요.',
+    '전체 STEP 흐름은 유지하되, 이 답변만큼은 선택된 전문가의 관점이 분명히 드러나야 합니다.',
+  ].join('\n')
+}
+
 function getStageSpecificInstruction(currentStageKey: StageKey) {
   switch (currentStageKey) {
     case 'step_1_idea':
@@ -470,19 +489,27 @@ function buildSystemPrompt({
   project,
   referenceImages,
   currentStageKey,
+  activeExpert,
+  expertCall,
 }: {
   project: ProjectRecord | null
   referenceImages: ReferenceImageRecord[]
   currentStageKey: StageKey
+  activeExpert: ExpertKey
+  expertCall: boolean
 }) {
   const projectContext = buildProjectContext(project, referenceImages)
   const stageInstruction = getStageSpecificInstruction(currentStageKey)
+  const expertInstruction = getExpertPrompt(activeExpert)
+  const expertLabel = getExpertDefinition(activeExpert).label
 
   return `
 ${SYSTEM_PROMPT_TEMPLATE}
 
 [실행 컨텍스트]
 - 현재 단계 key: ${currentStageKey}
+- 현재 응답 전문가: ${expertLabel}
+- 전문가 호출 여부: ${expertCall ? 'yes' : 'no'}
 - 반드시 현재 단계 기준으로만 응답하세요.
 - 사용자에게는 내부 단계 key 자체를 노출하지 마세요.
 - 프로젝트 정보와 레퍼런스 분석을 근거로 답하세요.
@@ -495,10 +522,14 @@ ${SYSTEM_PROMPT_TEMPLATE}
 - 필요할 때는 generate_design_image 도구를 사용해 Nano Banana 이미지 생성을 요청할 수 있습니다.
 - 사용자가 이미지 생성, 컨셉 시각화, 무드보드, 디자인 시안, 레퍼런스 합성, 최종 디자인 렌더를 원하면 이 도구를 적극적으로 사용하세요.
 - 도구를 사용한 경우, 본문에서는 이미지 생성이 완료되었다는 설명과 함께 무엇을 시각화했는지 짧게 요약하세요.
+- 전문가 호출 여부가 yes이면 선택 전문가 관점의 답변을 새로 생성하되, 확정 조건이 명확히 충족되지 않은 상태에서 단계를 전환하지 마세요.
+- 전문가 호출 여부가 yes이면 전체 진행을 대신하기보다 현재 맥락에 대한 전문가 검토/판단/질문 1개를 제공합니다.
 
 ${projectContext}
 
 ${stageInstruction}
+
+${expertInstruction}
 
 [단계 메타 출력 규칙]
 - 사용자에게 보여줄 실제 답변을 모두 작성한 뒤, 마지막 줄 아래에 반드시 아래 형식의 메타 블록을 추가하세요.
@@ -611,6 +642,10 @@ export async function POST(req: Request) {
     const normalizedMessages = normalizeMessages(body.messages)
     const isInitialEntry = normalizedMessages.length === 0
     const currentStageKey = body.currentStageKey ?? DEFAULT_STAGE_KEY
+    const activeExpert = isExpertKey(body.activeExpert)
+      ? body.activeExpert
+      : 'aidee'
+    const expertCall = body.expertCall === true && activeExpert !== 'aidee'
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -642,6 +677,8 @@ export async function POST(req: Request) {
       project,
       referenceImages,
       currentStageKey,
+      activeExpert,
+      expertCall,
     })
 
     const messages: ModelMessage[] = isInitialEntry
@@ -651,7 +688,15 @@ export async function POST(req: Request) {
             content: buildInitialPrompt(project),
           },
         ]
-      : normalizedMessages
+      : expertCall
+        ? [
+            ...normalizedMessages,
+            {
+              role: 'user',
+              content: buildExpertCallPrompt(activeExpert),
+            },
+          ]
+        : normalizedMessages
 
     let generatedImagePayload: GeneratedImageBlock | null = null
     const lastUserMessage =
@@ -705,10 +750,19 @@ export async function POST(req: Request) {
       },
     })
 
-    const { cleanedText, stageMeta } = parseStageMeta(
+    const { cleanedText, stageMeta: parsedStageMeta } = parseStageMeta(
       result.text,
       currentStageKey
     )
+    const stageMeta = expertCall
+      ? {
+          ...parsedStageMeta,
+          currentStageKey,
+          nextStageKey: currentStageKey,
+          transition: false,
+          reason: 'expert_call',
+        }
+      : parsedStageMeta
 
     let finalText = sanitizeAssistantText(cleanedText)
 

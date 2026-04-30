@@ -12,6 +12,12 @@ import {
   extractGeneratedImagesBlock,
   type GeneratedImageBlock,
 } from '@/lib/image-generation'
+import {
+  EXPERT_DEFINITIONS,
+  getExpertDefinition,
+  isExpertKey,
+  type ExpertKey,
+} from '@/lib/experts'
 import PersonaCard from '@/components/project/persona-card'
 import { type RfpDocument, extractRfpJsonBlock } from '@/lib/rfp'
 import { createClient } from '@/lib/supabase/client'
@@ -122,6 +128,74 @@ function parsePersonaData(content: string) {
   return hasMinimumData ? parsed : null
 }
 
+function ExpertAvatar({
+  expertKey,
+  selected = false,
+  className = '',
+}: {
+  expertKey: ExpertKey
+  selected?: boolean
+  className?: string
+}) {
+  const mutedClass = selected ? '' : 'opacity-45 grayscale'
+
+  if (expertKey === 'planner') {
+    return (
+      <span
+        className={`relative block h-6 w-6 overflow-hidden rounded-full bg-indigo-50 ${mutedClass} ${className}`}
+      >
+        <span className="absolute left-[7px] top-[4px] h-3 w-2.5 rounded-t-full bg-indigo-300" />
+        <span className="absolute left-[9px] top-[15px] h-1 w-1.5 rounded-full bg-blue-600" />
+      </span>
+    )
+  }
+
+  if (expertKey === 'style_designer') {
+    return (
+      <span
+        className={`relative block h-6 w-6 overflow-hidden rounded-full bg-fuchsia-50 ${mutedClass} ${className}`}
+      >
+        <span className="absolute left-[6px] top-[5px] h-2.5 w-2.5 rounded-full bg-[radial-gradient(ellipse_at_top_left,_#4E46E2_20%,_#625DF6_55%,_#E37DFF_95%)]" />
+        <span className="absolute left-[4px] top-[9px] h-2.5 w-1 rounded-full bg-gradient-to-b from-sky-500 to-green-400" />
+        <span className="absolute left-[11px] top-[10px] h-1.5 w-1.5 rounded-full bg-gradient-to-l from-violet-700 to-fuchsia-400" />
+      </span>
+    )
+  }
+
+  if (expertKey === 'engineer') {
+    return (
+      <span
+        className={`relative block h-6 w-6 overflow-hidden rounded-full bg-emerald-100 ${mutedClass} ${className}`}
+      >
+        <span className="absolute left-[4px] top-[4px] h-4 w-4 rotate-45 rounded-sm bg-green-400" />
+        <span className="absolute left-[7px] top-[6px] h-2.5 w-2.5 rounded-sm bg-green-500" />
+        <span className="absolute left-[10px] top-[10px] h-1 w-1 rounded-full bg-green-200" />
+      </span>
+    )
+  }
+
+  if (expertKey === 'marketer') {
+    return (
+      <span
+        className={`relative block h-6 w-6 overflow-hidden rounded-full bg-sky-50 ${mutedClass} ${className}`}
+      >
+        <span className="absolute left-[5px] top-[8px] h-2.5 w-3.5 rounded-sm bg-gradient-to-b from-sky-200 to-fuchsia-300" />
+        <span className="absolute left-[7px] top-[13px] h-1.5 w-0.5 rounded-full bg-sky-500" />
+        <span className="absolute left-[11px] top-[10px] h-2.5 w-0.5 rounded-full bg-sky-600" />
+        <span className="absolute left-[15px] top-[12px] h-2 w-0.5 rounded-full bg-sky-400" />
+      </span>
+    )
+  }
+
+  return (
+    <span
+      className={`flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-[10px] font-semibold text-blue-700 ${className}`}
+    >
+      A
+    </span>
+  )
+}
+
 export default function ChatPage({
   projectId,
   projectTitle,
@@ -138,6 +212,7 @@ export default function ChatPage({
   const [isDownloadingRfp, setIsDownloadingRfp] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [currentStageKey, setCurrentStageKey] = useState<StageKey>('step_1_idea')
+  const [activeExpert, setActiveExpert] = useState<ExpertKey>('aidee')
   const [latestRfpJson, setLatestRfpJson] = useState<RfpDocument | null>(null)
   const [latestRfpContent, setLatestRfpContent] = useState<string | null>(null)
   const [latestGeneratedImageBlock, setLatestGeneratedImageBlock] =
@@ -145,10 +220,15 @@ export default function ChatPage({
   const [selectedGeneratedImages, setSelectedGeneratedImages] = useState<
     Record<string, number>
   >({})
+  const [isExpertPickerOpen, setIsExpertPickerOpen] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const searchParams = useSearchParams()
+  const activeExpertDefinition = getExpertDefinition(activeExpert)
+  const selectableExperts = EXPERT_DEFINITIONS.filter(
+    (expert) => expert.key !== 'aidee'
+  )
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value)
@@ -316,6 +396,16 @@ export default function ChatPage({
           setLatestGeneratedImageBlock(latestImageBlockFromHistory)
         }
 
+        const latestExpertFromHistory = [...normalizedMessages]
+          .reverse()
+          .find((message) =>
+            isExpertKey(message.normalizedMessage.active_agent)
+          )?.normalizedMessage.active_agent
+
+        if (isExpertKey(latestExpertFromHistory)) {
+          setActiveExpert(latestExpertFromHistory)
+        }
+
         setMessages(
           normalizedMessages.map((message) => message.normalizedMessage)
         )
@@ -354,6 +444,7 @@ export default function ChatPage({
               messages: [],
               projectId,
               currentStageKey,
+              activeExpert: 'aidee',
             }),
           })
 
@@ -533,7 +624,9 @@ export default function ChatPage({
 
   const streamAssistantResponse = async (
     nextMessages: ChatMessage[],
-    stageKeyForRequest: StageKey = currentStageKey
+    stageKeyForRequest: StageKey = currentStageKey,
+    expertForRequest: ExpertKey = activeExpert,
+    expertCall = false
   ) => {
     const response = await fetch('/api/chat', {
       method: 'POST',
@@ -542,6 +635,8 @@ export default function ChatPage({
         messages: nextMessages,
         projectId,
         currentStageKey: stageKeyForRequest,
+        activeExpert: expertForRequest,
+        expertCall,
       }),
     })
 
@@ -561,7 +656,12 @@ export default function ChatPage({
 
     setMessages((prev) => [
       ...prev,
-      { id: aiMessageId, role: 'assistant', content: '' },
+      {
+        id: aiMessageId,
+        role: 'assistant',
+        content: '',
+        active_agent: expertForRequest,
+      },
     ])
 
     while (true) {
@@ -583,6 +683,7 @@ export default function ChatPage({
       id: aiMessageId,
       role: 'assistant',
       content: aiContent,
+      active_agent: expertForRequest,
     })
 
     if (rfpJson) {
@@ -612,11 +713,20 @@ export default function ChatPage({
       await insertMessage({
         role: 'assistant',
         content: aiContent,
-        activeAgent: 'aidee',
+        activeAgent: expertForRequest,
       })
     }
 
     await applyStageHeaders(response, normalizedMessage.content)
+  }
+
+  const selectExpert = (expert: ExpertKey) => {
+    if (isLoading) {
+      return
+    }
+
+    setActiveExpert(expert)
+    setIsExpertPickerOpen(false)
   }
 
   const onFormSubmit = async (e: React.FormEvent) => {
@@ -629,12 +739,13 @@ export default function ChatPage({
       id: Date.now().toString(),
       role: 'user',
       content: input,
-      active_agent: 'aidee',
+      active_agent: activeExpert,
     }
 
     const nextMessages = [...messages, userMessage]
     setMessages(nextMessages)
     setInput('')
+    setIsExpertPickerOpen(false)
     setIsLoading(true)
 
     if (textareaRef.current) {
@@ -645,9 +756,9 @@ export default function ChatPage({
       await insertMessage({
         role: 'user',
         content: userMessage.content,
-        activeAgent: 'aidee',
+        activeAgent: activeExpert,
       })
-      await streamAssistantResponse(nextMessages, currentStageKey)
+      await streamAssistantResponse(nextMessages, currentStageKey, activeExpert)
     } catch (error) {
       console.error(error)
     } finally {
@@ -664,7 +775,7 @@ export default function ChatPage({
       id: crypto.randomUUID(),
       role: 'user',
       content: actionText,
-      active_agent: 'aidee',
+      active_agent: activeExpert,
     }
 
     const nextMessages = [...messages, userMessage]
@@ -676,7 +787,7 @@ export default function ChatPage({
       await insertMessage({
         role: 'user',
         content: actionText,
-        activeAgent: 'aidee',
+        activeAgent: activeExpert,
       })
 
       let stageKeyForRequest = currentStageKey
@@ -689,7 +800,7 @@ export default function ChatPage({
         stageKeyForRequest = 'step_2_persona'
       }
 
-      await streamAssistantResponse(nextMessages, stageKeyForRequest)
+      await streamAssistantResponse(nextMessages, stageKeyForRequest, activeExpert)
     } catch (error) {
       console.error('Persona action failed:', error)
       setMessages((prev) => [
@@ -727,7 +838,7 @@ export default function ChatPage({
       id: crypto.randomUUID(),
       role: 'user',
       content: actionText,
-      active_agent: 'aidee',
+      active_agent: activeExpert,
     }
 
     const nextMessages = [...messages, userMessage]
@@ -743,10 +854,10 @@ export default function ChatPage({
       await insertMessage({
         role: 'user',
         content: actionText,
-        activeAgent: 'aidee',
+        activeAgent: activeExpert,
       })
 
-      await streamAssistantResponse(nextMessages, currentStageKey)
+      await streamAssistantResponse(nextMessages, currentStageKey, activeExpert)
     } catch (error) {
       console.error('Generated image selection failed:', error)
       setMessages((prev) => [
@@ -912,6 +1023,15 @@ export default function ChatPage({
             ) : null}
           </div>
 
+          <div className="flex items-center gap-2">
+            <div className="h-px flex-1 bg-gray-100" />
+            <ExpertAvatar expertKey={activeExpert} selected />
+            <p className="text-xs font-medium text-slate-500">
+              {activeExpertDefinition.label}가 함께하고 있어요.
+            </p>
+            <div className="h-px flex-1 bg-gray-100" />
+          </div>
+
           {messages.length === 0 && !isLoading ? (
             <div className="max-w-[514px] rounded-[24px] rounded-tl-none bg-gray-200 p-5 text-base leading-relaxed font-medium text-neutral-900">
               안녕하세요! Aidee입니다. 기획 중인 프로젝트를 함께 정리해볼게요.
@@ -948,6 +1068,18 @@ export default function ChatPage({
                   m.role === 'user' ? 'items-end' : 'items-start'
                 }`}
               >
+                {m.role === 'assistant' && isExpertKey(m.active_agent) ? (
+                  <div className="mb-1 flex items-center gap-1.5 px-1">
+                    <ExpertAvatar
+                      expertKey={m.active_agent}
+                      selected
+                      className="h-5 w-5"
+                    />
+                    <span className="text-xs font-medium text-slate-400">
+                      {getExpertDefinition(m.active_agent).label}
+                    </span>
+                  </div>
+                ) : null}
                 <div
                   className={`max-w-[514px] rounded-[24px] p-5 text-base leading-relaxed font-medium shadow-sm ${
                     m.role === 'user'
@@ -1051,32 +1183,87 @@ export default function ChatPage({
           })}
 
           {isLoading ? (
-            <div className="flex items-center gap-2 px-4">
-              <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400" />
-              <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:0.2s]" />
-              <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:0.4s]" />
+            <div className="flex items-center gap-3 rounded-3xl bg-gray-100 px-5 py-4">
+              <div className="flex items-center gap-1.5">
+                <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400" />
+                <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:0.2s]" />
+                <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:0.4s]" />
+              </div>
+              <p className="text-sm font-medium text-slate-500">
+                {activeExpertDefinition.loadingLabel}
+              </p>
             </div>
           ) : null}
         </div>
 
         <footer className="w-full max-w-4xl p-6 pb-10">
           <form onSubmit={onFormSubmit} className="group relative">
-            <div className="flex min-h-[56px] items-end gap-3 rounded-[99px] bg-white p-2 shadow-[0px_2px_8px_0px_rgba(0,0,0,0.08)] outline outline-1 outline-gray-200 transition-all focus-within:outline-blue-200">
-              <div className="mb-0.5 flex h-10 w-10 cursor-pointer items-center justify-center rounded-full text-2xl font-light text-zinc-400 hover:bg-gray-50">
-                +
+            {isExpertPickerOpen ? (
+              <div className="absolute bottom-[68px] left-0 z-20 w-52 overflow-hidden rounded-[20px] bg-white px-1 py-2.5 shadow-[0px_16px_60px_0px_rgba(0,0,0,0.08)] outline outline-1 outline-gray-100">
+                <div className="px-4 pb-2 pt-1.5 text-xs font-semibold leading-5 text-slate-400">
+                  AI 전문가 선택
+                </div>
+                <div className="flex flex-col gap-1">
+                  {selectableExperts.map((expert) => {
+                    const isActive = expert.key === activeExpert
+
+                    return (
+                      <button
+                        key={expert.key}
+                        type="button"
+                        disabled={isLoading}
+                        onClick={() => selectExpert(expert.key)}
+                        className={`flex w-full items-center gap-2 rounded-2xl px-3 py-2 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                          isActive
+                            ? 'bg-gray-100 text-neutral-900'
+                            : 'text-slate-500 hover:bg-gray-50 hover:text-neutral-900'
+                        }`}
+                      >
+                        <ExpertAvatar expertKey={expert.key} selected={isActive} />
+                        <span className="text-sm font-medium leading-5">
+                          {expert.label}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
+            ) : null}
+
+            <div className="flex min-h-[56px] items-end gap-3 rounded-[20px] bg-white p-2 shadow-[0px_4px_24px_0px_rgba(0,0,0,0.08)] outline outline-1 outline-gray-200 transition-all focus-within:outline-blue-200">
+              <button
+                type="button"
+                disabled={isLoading}
+                onClick={() => setIsExpertPickerOpen((prev) => !prev)}
+                className="mb-0.5 flex h-10 min-w-10 items-center justify-center rounded-full transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                title="AI 전문가 선택"
+              >
+                {activeExpert === 'aidee' ? (
+                  <span className="relative h-8 w-8 overflow-hidden rounded-full bg-gray-100">
+                    <span className="absolute left-[7px] top-[7px] h-4 w-4 rounded-full bg-gray-300" />
+                    <span className="absolute left-[12px] top-[12px] h-1.5 w-1.5 rounded-full bg-gray-100" />
+                  </span>
+                ) : (
+                  <ExpertAvatar expertKey={activeExpert} selected />
+                )}
+              </button>
               <textarea
                 ref={textareaRef}
                 rows={1}
                 value={input}
                 onChange={handleInput}
+                onFocus={() => setIsExpertPickerOpen(false)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
                     void onFormSubmit(e)
                   }
                 }}
-                placeholder="무엇이든 물어보세요"
+                placeholder={
+                  isExpertPickerOpen
+                    ? '원하는 전문가를 선택해서 물어보세요.'
+                    : activeExpertDefinition.inputLabel
+                }
                 className="max-h-[200px] flex-1 resize-none bg-transparent px-1 py-3 text-base leading-relaxed font-medium outline-none placeholder:text-zinc-400"
               />
               <button

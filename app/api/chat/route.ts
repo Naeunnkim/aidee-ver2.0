@@ -500,15 +500,17 @@ function buildSystemPrompt({
 }) {
   const projectContext = buildProjectContext(project, referenceImages)
   const stageInstruction = getStageSpecificInstruction(currentStageKey)
-  const expertInstruction = getExpertPrompt(activeExpert)
-  const expertLabel = getExpertDefinition(activeExpert).label
+  const expertInstruction = expertCall ? getExpertPrompt(activeExpert) : ''
+  const expertLabel = expertCall
+    ? getExpertDefinition(activeExpert).label
+    : getExpertDefinition('aidee').label
 
   return `
 ${SYSTEM_PROMPT_TEMPLATE}
 
 [실행 컨텍스트]
 - 현재 단계 key: ${currentStageKey}
-- 현재 응답 전문가: ${expertLabel}
+- 현재 응답 주체: ${expertLabel}
 - 전문가 호출 여부: ${expertCall ? 'yes' : 'no'}
 - 반드시 현재 단계 기준으로만 응답하세요.
 - 사용자에게는 내부 단계 key 자체를 노출하지 마세요.
@@ -524,12 +526,13 @@ ${SYSTEM_PROMPT_TEMPLATE}
 - 도구를 사용한 경우, 본문에서는 이미지 생성이 완료되었다는 설명과 함께 무엇을 시각화했는지 짧게 요약하세요.
 - 전문가 호출 여부가 yes이면 선택 전문가 관점의 답변을 새로 생성하되, 확정 조건이 명확히 충족되지 않은 상태에서 단계를 전환하지 마세요.
 - 전문가 호출 여부가 yes이면 전체 진행을 대신하기보다 현재 맥락에 대한 전문가 검토/판단/질문 1개를 제공합니다.
+- 전문가 호출 여부가 no이면 전문가별 프롬프트를 따르지 말고 Aidee 전체 플로우만 따르세요.
 
 ${projectContext}
 
 ${stageInstruction}
 
-${expertInstruction}
+${expertInstruction ? `[전문가 전용 지시]\n${expertInstruction}` : ''}
 
 [단계 메타 출력 규칙]
 - 사용자에게 보여줄 실제 답변을 모두 작성한 뒤, 마지막 줄 아래에 반드시 아래 형식의 메타 블록을 추가하세요.

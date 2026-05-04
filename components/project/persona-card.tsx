@@ -10,9 +10,9 @@ type SuccessItem = {
 
 type PersonaCardData = {
   user: string[]
-  usage: string[]
+  behaviorMap: string[]
+  correlationAnalysis: string[]
   problem: string[]
-  currentSolution: string[]
   decision: string[]
   success: SuccessItem[]
   imageUrl?: string
@@ -156,10 +156,10 @@ const CardLayout = ({ data, mode, cardRef }: CardLayoutWithRefProps) => {
     <div
       ref={cardRef}
       data-persona-card="true"
-      className={`flex w-full rounded-3xl font-sans ${isExport ? '' : 'overflow-hidden'}`}
-      style={{
-        minHeight: isExport ? 'unset' : '420px',
-        height: isExport ? 'auto' : '420px',
+        className={`flex w-full rounded-3xl font-sans ${isExport ? '' : 'overflow-hidden'}`}
+        style={{
+        minHeight: isExport ? 'unset' : '560px',
+        height: isExport ? 'auto' : '560px',
         backgroundColor: '#ffffff',
         border: '1px solid #f3f4f6',
         boxShadow: isExport ? 'none' : '0 20px 40px rgba(15, 23, 42, 0.08)',
@@ -169,7 +169,7 @@ const CardLayout = ({ data, mode, cardRef }: CardLayoutWithRefProps) => {
         className="relative w-[30%] shrink-0"
         style={{
           backgroundColor: '#e5e7eb',
-          minHeight: isExport ? '460px' : '100%',
+          minHeight: isExport ? '640px' : '100%',
         }}
       >
         <img
@@ -183,7 +183,7 @@ const CardLayout = ({ data, mode, cardRef }: CardLayoutWithRefProps) => {
         className={
           isExport
             ? 'flex flex-1 flex-col gap-4 px-8 pt-7 pb-7'
-            : 'flex flex-1 flex-col gap-3 overflow-hidden px-8 pt-6 pb-5'
+            : 'flex flex-1 flex-col gap-3 overflow-hidden px-7 pt-6 pb-5'
         }
       >
         <div className="flex items-start justify-between">
@@ -214,24 +214,24 @@ const CardLayout = ({ data, mode, cardRef }: CardLayoutWithRefProps) => {
           className={
             isExport
               ? 'space-y-4'
-              : 'flex-1 space-y-3 overflow-hidden pr-1'
+              : 'flex-1 space-y-3 overflow-y-auto pr-1'
           }
         >
           <div
             className={
               isExport
                 ? 'grid grid-cols-2 gap-x-8 gap-y-4'
-                : 'grid grid-cols-2 gap-x-6 gap-y-3'
+                : 'grid grid-cols-2 gap-x-5 gap-y-3'
             }
           >
             <MiniSection title="User" items={data.user} mode={mode} />
-            <MiniSection title="Problem" items={data.problem} mode={mode} />
-            <MiniSection title="Usage" items={data.usage} mode={mode} />
+            <MiniSection title="Behavior Map" items={data.behaviorMap} mode={mode} />
             <MiniSection
-              title="Current Solution"
-              items={data.currentSolution}
+              title="Correlation Analysis"
+              items={data.correlationAnalysis}
               mode={mode}
             />
+            <MiniSection title="Problem" items={data.problem} mode={mode} />
             <div className="col-span-2">
               <MiniSection title="Decision" items={data.decision} mode={mode} />
             </div>

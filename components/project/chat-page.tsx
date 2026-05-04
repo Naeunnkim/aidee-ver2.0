@@ -20,6 +20,7 @@ import {
 } from '@/lib/experts'
 import PersonaCard from '@/components/project/persona-card'
 import { type RfpDocument, extractRfpJsonBlock } from '@/lib/rfp'
+import { saveGeneratedProjectThumbnail } from '@/lib/project-thumbnail'
 import { createClient } from '@/lib/supabase/client'
 import {
   SIDEBAR_STEPS,
@@ -64,19 +65,64 @@ function parsePersonaData(content: string) {
   )
   const imageUrl = imageUrlMatch ? imageUrlMatch[0] : ''
 
-  const sectionTitles = [
+  const sectionPatterns = [
+    '1\\.\\s*User',
     'User',
-    'Usage',
+    '2\\.\\s*Behavior\\s*Map',
+    'Behavior\\s*Map',
+    '3\\.\\s*Correlation\\s*Analysis',
+    'Correlation\\s*Analysis',
+    '4\\.\\s*Problem',
     'Problem',
-    'Current Solution',
-    'Decision',
     'Success',
+    '5\\.\\s*Decision',
+    'Decision',
   ]
 
-  const extractSection = (title: string) => {
-    const nextTitles = sectionTitles.filter((item) => item !== title).join('|')
+  const cleanLine = (line: string) =>
+    line
+      .replace(/^#{1,6}\s*/, '')
+      .replace(/^\*\*\s*/, '')
+      .replace(/\s*\*\*$/, '')
+      .replace(/^[-•]\s*/, '')
+      .trim()
+
+  const normalizeLines = (raw: string) => {
+    const lines = raw
+      .split('\n')
+      .map(cleanLine)
+      .filter(Boolean)
+      .filter((line) => !/^```/.test(line))
+      .filter((line) => !/^[-–—]+$/.test(line))
+
+    const merged: string[] = []
+
+    for (const line of lines) {
+      if (line.startsWith(':')) {
+        const value = line.replace(/^:\s*/, '').trim()
+        if (merged.length > 0 && value) {
+          merged[merged.length - 1] = `${merged[merged.length - 1]}: ${value}`
+        }
+        continue
+      }
+
+      if (/^\(.+\)$/.test(line) && merged.length > 0) {
+        merged[merged.length - 1] = `${merged[merged.length - 1]} ${line}`
+        continue
+      }
+
+      merged.push(line)
+    }
+
+    return merged
+  }
+
+  const extractSection = (titlePattern: string) => {
+    const nextTitles = sectionPatterns
+      .filter((item) => item !== titlePattern)
+      .join('|')
     const regex = new RegExp(
-      `(?:^|\\n)(?:##+\\s*|\\*\\*\\s*)?${title}(?:\\s*\\*\\*)?\\s*\\n([\\s\\S]*?)(?=\\n(?:##+\\s*|\\*\\*\\s*)?(?:${nextTitles})(?:\\s*\\*\\*)?\\s*\\n|$)`,
+      `(?:^|\\n)\\s*(?:##+\\s*)?(?:\\*\\*\\s*)?${titlePattern}(?:\\s*\\*\\*)?\\s*\\n([\\s\\S]*?)(?=\\n\\s*(?:##+\\s*)?(?:\\*\\*\\s*)?(?:${nextTitles})(?:\\s*\\*\\*)?\\s*\\n|$)`,
       'i'
     )
     const match = normalizedContent.match(regex)
@@ -84,44 +130,59 @@ function parsePersonaData(content: string) {
       return []
     }
 
-    return match[1]
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .filter(
-        (line) =>
-          line.startsWith('-') || line.startsWith('•') || line.startsWith('#')
-      )
-      .map((line) => line.replace(/^[-•]\s*/, '').trim())
-      .filter((line) => line.length > 0)
-      .filter((line) => !/^[-–—]+$/.test(line))
+    return normalizeLines(match[1])
   }
 
   const successLines = extractSection('Success')
-  const successData = successLines.map((line) => {
-    const normalized = line.replace(/^#/, '').trim()
-    const [tag, ...descParts] = normalized.split('→').map((s) => s.trim())
-    return {
-      tag: tag || normalized,
-      desc: descParts.join(' ') || '',
-    }
-  })
+  const successData = successLines
+    .map((line, index, lines) => {
+      if (line.startsWith('#')) {
+        return {
+          tag: line.replace(/^#/, '').trim(),
+          desc: lines[index + 1]?.startsWith('#') ? '' : (lines[index + 1] ?? ''),
+        }
+      }
+
+      if (index > 0 && lines[index - 1]?.startsWith('#')) {
+        return null
+      }
+
+      const [tag, ...descParts] = line.split('→').map((s) => s.trim())
+      return {
+        tag: tag.replace(/^#/, '').trim(),
+        desc: descParts.join(' '),
+      }
+    })
+    .filter(
+      (item): item is { tag: string; desc: string } =>
+        Boolean(item?.tag || item?.desc)
+    )
 
   const parsed = {
-    user: extractSection('User'),
-    usage: extractSection('Usage'),
-    problem: extractSection('Problem'),
-    currentSolution: extractSection('Current Solution'),
-    decision: extractSection('Decision'),
+    user: extractSection('1\\.\\s*User').length
+      ? extractSection('1\\.\\s*User')
+      : extractSection('User'),
+    behaviorMap: extractSection('2\\.\\s*Behavior\\s*Map').length
+      ? extractSection('2\\.\\s*Behavior\\s*Map')
+      : extractSection('Behavior\\s*Map'),
+    correlationAnalysis: extractSection('3\\.\\s*Correlation\\s*Analysis').length
+      ? extractSection('3\\.\\s*Correlation\\s*Analysis')
+      : extractSection('Correlation\\s*Analysis'),
+    problem: extractSection('4\\.\\s*Problem').length
+      ? extractSection('4\\.\\s*Problem')
+      : extractSection('Problem'),
     success: successData,
+    decision: extractSection('5\\.\\s*Decision').length
+      ? extractSection('5\\.\\s*Decision')
+      : extractSection('Decision'),
     imageUrl,
   }
 
   const hasMinimumData =
     parsed.user.length > 0 ||
-    parsed.usage.length > 0 ||
+    parsed.behaviorMap.length > 0 ||
+    parsed.correlationAnalysis.length > 0 ||
     parsed.problem.length > 0 ||
-    parsed.currentSolution.length > 0 ||
     parsed.decision.length > 0 ||
     parsed.success.length > 0
 
@@ -196,6 +257,28 @@ function ExpertAvatar({
   )
 }
 
+function getStageExperts(stageKey: StageKey): ExpertKey[] {
+  switch (stageKey) {
+    case 'step_1_idea':
+      return ['planner']
+    case 'step_2_persona':
+    case 'step_2_research':
+      return ['planner', 'marketer']
+    case 'step_3_direction':
+      return ['planner', 'style_designer', 'engineer', 'marketer']
+    case 'step_4_style':
+    case 'step_4_definition':
+      return ['style_designer']
+    case 'step_5_design':
+      return ['style_designer', 'engineer']
+    case 'step_6_rfp':
+    case 'step_5_rfp':
+      return ['planner', 'engineer', 'marketer', 'style_designer']
+    default:
+      return ['planner']
+  }
+}
+
 export default function ChatPage({
   projectId,
   projectTitle,
@@ -229,6 +312,48 @@ export default function ChatPage({
   const selectableExperts = EXPERT_DEFINITIONS.filter(
     (expert) => expert.key !== 'aidee'
   )
+  const currentStageExperts = getStageExperts(currentStageKey)
+  const currentStageExpertLabels = currentStageExperts
+    .map((expert) => getExpertDefinition(expert).label)
+    .join(', ')
+  const expertSuggestionCandidates = selectableExperts.filter(
+    (expert) => !currentStageExperts.includes(expert.key)
+  )
+  const expertRepliesByAideeId = new Map<string, ChatMessage[]>()
+  const nestedExpertMessageIds = new Set<string>()
+  let latestRenderableAideeId: string | null = null
+
+  for (const message of messages) {
+    if (message.role === 'user') {
+      latestRenderableAideeId = null
+      continue
+    }
+
+    if (message.role !== 'assistant') {
+      continue
+    }
+
+    if (!message.active_agent || message.active_agent === 'aidee') {
+      latestRenderableAideeId = message.id
+      continue
+    }
+
+    if (isExpertKey(message.active_agent) && latestRenderableAideeId) {
+      const currentReplies =
+        expertRepliesByAideeId.get(latestRenderableAideeId) ?? []
+      currentReplies.push(message)
+      expertRepliesByAideeId.set(latestRenderableAideeId, currentReplies)
+      nestedExpertMessageIds.add(message.id)
+    }
+  }
+
+  const latestAideeAssistantId = [...messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.role === 'assistant' &&
+        (!message.active_agent || message.active_agent === 'aidee')
+    )?.id
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value)
@@ -240,6 +365,22 @@ export default function ChatPage({
       )}px`
     }
   }
+
+  const saveProjectThumbnailFromImageBlock = useCallback(
+    async (imageBlock: GeneratedImageBlock, overwrite = true) => {
+      try {
+        await saveGeneratedProjectThumbnail({
+          supabase: createClient(),
+          projectId,
+          imageBlock,
+          overwrite,
+        })
+      } catch (error) {
+        console.error('[project thumbnail] failed to save generated image:', error)
+      }
+    },
+    [projectId]
+  )
 
   const insertMessage = useCallback(
     async ({
@@ -394,16 +535,7 @@ export default function ChatPage({
 
         if (latestImageBlockFromHistory) {
           setLatestGeneratedImageBlock(latestImageBlockFromHistory)
-        }
-
-        const latestExpertFromHistory = [...normalizedMessages]
-          .reverse()
-          .find((message) =>
-            isExpertKey(message.normalizedMessage.active_agent)
-          )?.normalizedMessage.active_agent
-
-        if (isExpertKey(latestExpertFromHistory)) {
-          setActiveExpert(latestExpertFromHistory)
+          void saveProjectThumbnailFromImageBlock(latestImageBlockFromHistory, false)
         }
 
         setMessages(
@@ -481,6 +613,7 @@ export default function ChatPage({
 
           if (imageBlock) {
             setLatestGeneratedImageBlock(imageBlock)
+            await saveProjectThumbnailFromImageBlock(imageBlock)
           }
 
           if (rfpJson) {
@@ -520,6 +653,7 @@ export default function ChatPage({
   }, [
     insertMessage,
     applyStageHeaders,
+    saveProjectThumbnailFromImageBlock,
     projectId,
     isInitialLoading,
     isLoading,
@@ -692,6 +826,7 @@ export default function ChatPage({
 
     if (imageBlock) {
       setLatestGeneratedImageBlock(imageBlock)
+      await saveProjectThumbnailFromImageBlock(imageBlock)
     }
 
     if (
@@ -729,6 +864,25 @@ export default function ChatPage({
     setIsExpertPickerOpen(false)
   }
 
+  const requestStageExpertAnswer = async (expert: ExpertKey) => {
+    if (isLoading || expert === 'aidee') {
+      return
+    }
+
+    setActiveExpert(expert)
+    setIsExpertPickerOpen(false)
+    setIsLoading(true)
+
+    try {
+      await streamAssistantResponse(messages, currentStageKey, expert, true)
+    } catch (error) {
+      console.error(error)
+    } finally {
+      setActiveExpert('aidee')
+      setIsLoading(false)
+    }
+  }
+
   const onFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!input.trim() || isLoading) {
@@ -758,7 +912,16 @@ export default function ChatPage({
         content: userMessage.content,
         activeAgent: activeExpert,
       })
-      await streamAssistantResponse(nextMessages, currentStageKey, activeExpert)
+      const isTemporaryExpertCall = activeExpert !== 'aidee'
+      await streamAssistantResponse(
+        nextMessages,
+        currentStageKey,
+        activeExpert,
+        isTemporaryExpertCall
+      )
+      if (isTemporaryExpertCall) {
+        setActiveExpert('aidee')
+      }
     } catch (error) {
       console.error(error)
     } finally {
@@ -775,7 +938,7 @@ export default function ChatPage({
       id: crypto.randomUUID(),
       role: 'user',
       content: actionText,
-      active_agent: activeExpert,
+      active_agent: 'aidee',
     }
 
     const nextMessages = [...messages, userMessage]
@@ -787,7 +950,7 @@ export default function ChatPage({
       await insertMessage({
         role: 'user',
         content: actionText,
-        activeAgent: activeExpert,
+        activeAgent: 'aidee',
       })
 
       let stageKeyForRequest = currentStageKey
@@ -800,7 +963,7 @@ export default function ChatPage({
         stageKeyForRequest = 'step_2_persona'
       }
 
-      await streamAssistantResponse(nextMessages, stageKeyForRequest, activeExpert)
+      await streamAssistantResponse(nextMessages, stageKeyForRequest, 'aidee')
     } catch (error) {
       console.error('Persona action failed:', error)
       setMessages((prev) => [
@@ -838,7 +1001,7 @@ export default function ChatPage({
       id: crypto.randomUUID(),
       role: 'user',
       content: actionText,
-      active_agent: activeExpert,
+      active_agent: 'aidee',
     }
 
     const nextMessages = [...messages, userMessage]
@@ -854,10 +1017,10 @@ export default function ChatPage({
       await insertMessage({
         role: 'user',
         content: actionText,
-        activeAgent: activeExpert,
+        activeAgent: 'aidee',
       })
 
-      await streamAssistantResponse(nextMessages, currentStageKey, activeExpert)
+      await streamAssistantResponse(nextMessages, currentStageKey, 'aidee')
     } catch (error) {
       console.error('Generated image selection failed:', error)
       setMessages((prev) => [
@@ -1025,9 +1188,18 @@ export default function ChatPage({
 
           <div className="flex items-center gap-2">
             <div className="h-px flex-1 bg-gray-100" />
-            <ExpertAvatar expertKey={activeExpert} selected />
+            <div className="flex -space-x-1">
+              {currentStageExperts.map((expert) => (
+                <ExpertAvatar
+                  key={expert}
+                  expertKey={expert}
+                  selected
+                  className="h-6 w-6 ring-2 ring-white"
+                />
+              ))}
+            </div>
             <p className="text-xs font-medium text-slate-500">
-              {activeExpertDefinition.label}가 함께하고 있어요.
+              참여 전문가: {currentStageExpertLabels}
             </p>
             <div className="h-px flex-1 bg-gray-100" />
           </div>
@@ -1039,6 +1211,10 @@ export default function ChatPage({
           ) : null}
 
           {messages.map((m) => {
+            if (nestedExpertMessageIds.has(m.id)) {
+              return null
+            }
+
             const isPersonaCard =
               m.role === 'assistant' &&
               (m.content.includes('Persona Card') ||
@@ -1178,11 +1354,107 @@ export default function ChatPage({
                     </div>
                   </div>
                 ) : null}
+                {m.role === 'assistant' &&
+                (!m.active_agent || m.active_agent === 'aidee') &&
+                expertRepliesByAideeId.get(m.id)?.length ? (
+                  <div className="mt-2 flex w-full max-w-[602px] flex-col gap-2">
+                    {expertRepliesByAideeId.get(m.id)?.map((reply) => {
+                      const expertKey = isExpertKey(reply.active_agent)
+                        ? reply.active_agent
+                        : 'aidee'
+                      const definition = getExpertDefinition(expertKey)
+                      const isReplyLoading = !reply.content.trim()
+
+                      return (
+                        <div
+                          key={reply.id}
+                          className="ml-5 rounded-2xl bg-gray-100 p-3 text-sm font-medium leading-6 text-neutral-800"
+                        >
+                          <div className="mb-1.5 flex items-center gap-1.5">
+                            <ExpertAvatar
+                              expertKey={expertKey}
+                              selected
+                              className="h-5 w-5"
+                            />
+                            <span className="text-xs font-medium text-slate-400">
+                              {definition.label}
+                            </span>
+                          </div>
+                          {isReplyLoading ? (
+                            <div className="flex min-h-16 flex-col items-center justify-center gap-2 text-slate-400">
+                              <div className="h-6 w-6 animate-spin rounded-full border-4 border-slate-300 border-t-transparent" />
+                              <span>{definition.loadingLabel}</span>
+                            </div>
+                          ) : (
+                            <div className="prose prose-sm prose-p:my-0 prose-p:leading-6 prose-li:my-0 max-w-none break-words whitespace-pre-wrap">
+                              <ReactMarkdown
+                                remarkPlugins={[remarkGfm, remarkBreaks]}
+                                components={{
+                                  p: ({ children }) => (
+                                    <p className="mb-1 leading-6 last:mb-0">
+                                      {children}
+                                    </p>
+                                  ),
+                                  ul: ({ children }) => (
+                                    <ul className="my-2 list-disc space-y-1 pl-5">
+                                      {children}
+                                    </ul>
+                                  ),
+                                  ol: ({ children }) => (
+                                    <ol className="my-2 list-decimal space-y-1 pl-5">
+                                      {children}
+                                    </ol>
+                                  ),
+                                  li: ({ children }) => (
+                                    <li className="leading-5 [&>p]:mb-0 [&>p]:inline">
+                                      {children}
+                                    </li>
+                                  ),
+                                  br: () => <br className="block h-1" />,
+                                }}
+                              >
+                                {reply.content}
+                              </ReactMarkdown>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : null}
+                {m.role === 'assistant' &&
+                m.id === latestAideeAssistantId &&
+                (!m.active_agent || m.active_agent === 'aidee') &&
+                m.content.trim() &&
+                expertSuggestionCandidates.length > 0 ? (
+                  <div className="mt-2 flex max-w-[602px] flex-wrap gap-1.5">
+                    {expertSuggestionCandidates.map((expert) => {
+                      const definition = getExpertDefinition(expert.key)
+
+                      return (
+                        <button
+                          key={`${m.id}-${expert.key}`}
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() => void requestStageExpertAnswer(expert.key)}
+                          className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-slate-500 shadow-sm outline outline-1 outline-gray-200 transition hover:bg-gray-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <ExpertAvatar
+                            expertKey={expert.key}
+                            selected
+                            className="h-5 w-5"
+                          />
+                          {definition.label} 답변 생성
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : null}
               </div>
             )
           })}
 
-          {isLoading ? (
+          {isLoading && activeExpert === 'aidee' ? (
             <div className="flex items-center gap-3 rounded-3xl bg-gray-100 px-5 py-4">
               <div className="flex items-center gap-1.5">
                 <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400" />

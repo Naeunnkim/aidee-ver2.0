@@ -4,6 +4,8 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 
 import ProjectModal from '@/components/dashboard/project-modal'
+import { extractGeneratedImagesBlock } from '@/lib/image-generation'
+import { saveGeneratedProjectThumbnail } from '@/lib/project-thumbnail'
 import { createClient } from '@/lib/supabase/client'
 
 type DashboardUser = {
@@ -16,6 +18,15 @@ type Project = {
   id: string
   title: string
   created_at: string
+  requirements?: {
+    thumbnail_image_url?: unknown
+    thumbnail_image_source?: unknown
+    thumbnail_image_prompt?: unknown
+  } | null
+}
+
+type MessageRecord = {
+  content: string
 }
 
 type ProjectListProps = {
@@ -34,6 +45,14 @@ function formatProjectDate(value: string) {
   return date.toLocaleDateString('ko-KR')
 }
 
+function getProjectThumbnail(project: Project) {
+  const thumbnailUrl = project.requirements?.thumbnail_image_url
+
+  return typeof thumbnailUrl === 'string' && thumbnailUrl.trim()
+    ? thumbnailUrl
+    : null
+}
+
 export function ProjectList({ user }: ProjectListProps) {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
@@ -42,6 +61,68 @@ export function ProjectList({ user }: ProjectListProps) {
 
   useEffect(() => {
     let isMounted = true
+
+    async function backfillProjectThumbnail(project: Project) {
+      if (getProjectThumbnail(project)) {
+        return
+      }
+
+      const supabase = createClient()
+      const { data: messages, error } = await supabase
+        .from('messages')
+        .select('content')
+        .eq('project_id', project.id)
+        .eq('role', 'assistant')
+        .order('seq_order', { ascending: false })
+        .limit(30)
+
+      if (error) {
+        console.error('[dashboard thumbnail] failed to fetch messages:', error)
+        return
+      }
+
+      const imageBlock = ((messages ?? []) as MessageRecord[])
+        .map((message) => extractGeneratedImagesBlock(message.content).imageBlock)
+        .find((block) => block?.images.length)
+
+      if (!imageBlock) {
+        return
+      }
+
+      try {
+        const thumbnailUrl = await saveGeneratedProjectThumbnail({
+          supabase,
+          projectId: project.id,
+          imageBlock,
+          overwrite: false,
+        })
+
+        if (!thumbnailUrl || !isMounted) {
+          return
+        }
+
+        setProjects((prev) =>
+          prev.map((item) =>
+            item.id === project.id
+              ? {
+                  ...item,
+                  requirements: {
+                    ...(item.requirements ?? {}),
+                    thumbnail_image_url: thumbnailUrl,
+                    thumbnail_image_source: 'generated',
+                    thumbnail_image_prompt: imageBlock.prompt,
+                  },
+                }
+              : item
+          )
+        )
+      } catch (thumbnailError) {
+        console.error(
+          '[dashboard thumbnail] failed to backfill generated thumbnail:',
+          thumbnailError
+        )
+      }
+    }
 
     async function fetchProjects() {
       const supabase = createClient()
@@ -60,7 +141,7 @@ export function ProjectList({ user }: ProjectListProps) {
 
       const { data, error } = await supabase
         .from('projects')
-        .select('id, title, created_at')
+        .select('id, title, created_at, requirements')
         .eq('user_id', authUser.id)
         .order('created_at', { ascending: false })
 
@@ -75,8 +156,14 @@ export function ProjectList({ user }: ProjectListProps) {
       }
 
       if (isMounted) {
-        setProjects((data ?? []) as Project[])
+        const nextProjects = (data ?? []) as Project[]
+        setProjects(nextProjects)
         setLoading(false)
+        nextProjects
+          .filter((project) => !getProjectThumbnail(project))
+          .forEach((project) => {
+            void backfillProjectThumbnail(project)
+          })
       }
     }
 
@@ -174,7 +261,15 @@ export function ProjectList({ user }: ProjectListProps) {
                   className="group flex h-64 flex-col overflow-hidden rounded-[24px] border border-gray-100 bg-white shadow-sm transition-all hover:shadow-md"
                 >
                   <div className="relative flex h-[140px] items-center justify-center overflow-hidden bg-slate-50">
-                    <div className="h-full w-full bg-gradient-to-br from-gray-100 to-gray-200" />
+                    {getProjectThumbnail(project) ? (
+                      <img
+                        src={getProjectThumbnail(project) ?? ''}
+                        alt={`${project.title} 썸네일`}
+                        className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                      />
+                    ) : (
+                      <div className="h-full w-full bg-gradient-to-br from-gray-100 to-gray-200" />
+                    )}
                   </div>
 
                   <div className="flex flex-col gap-2 p-5">

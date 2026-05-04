@@ -20,15 +20,30 @@ function getGeminiApiKey() {
 function buildNanobananaPrompt({
   prompt,
   count,
+  index,
 }: {
   prompt: string
   count: number
+  index: number
 }) {
+  const variationFocus =
+    count <= 1
+      ? 'Create the single best standalone image for this request.'
+      : [
+          'Variation focus: mood and emotional tone.',
+          'Variation focus: material, texture, and finish.',
+          'Variation focus: shape language, proportion, and detail.',
+          'Variation focus: balanced final design direction.',
+        ][Math.min(index, 3)]
+
   return [
     prompt,
     '',
-    `Generate ${count} image variation${count > 1 ? 's' : ''}.`,
-    'Return image outputs, not an explanation-only answer.',
+    `Generate exactly one standalone image. This is variation ${index + 1} of ${count}.`,
+    variationFocus,
+    'Do not create a collage, grid, triptych, contact sheet, storyboard, or multi-panel image.',
+    'Do not include multiple reference images inside the same output image.',
+    'Return one image output, not an explanation-only answer.',
   ].join('\n')
 }
 
@@ -128,11 +143,10 @@ export async function generateNanoBananaImages({
   model?: string
 }) {
   const images: string[] = []
-  const finalPrompt = buildNanobananaPrompt({ prompt, count })
 
   for (let index = 0; index < count; index += 1) {
     const image = await generateSingleNanobananaImage({
-      prompt: finalPrompt,
+      prompt: buildNanobananaPrompt({ prompt, count, index }),
       model,
     })
     images.push(image)
@@ -140,7 +154,7 @@ export async function generateNanoBananaImages({
 
   return {
     images,
-    prompt: finalPrompt,
+    prompt,
     model,
   } satisfies GeneratedImageBlock
 }

@@ -358,7 +358,8 @@ function buildStyleReferencePrompt({
   const guidelineBlock = buildReferenceGuidelineBlock(referenceImages)
 
   return [
-    'Create three distinct style reference images for a product design concept selection step.',
+    'Create one standalone style reference image for a product design concept selection step.',
+    'This prompt will be called multiple times to create separate options, so each output must contain only one complete reference image.',
     '',
     `Project title: ${project?.title || 'Untitled project'}`,
     '',
@@ -373,9 +374,8 @@ function buildStyleReferencePrompt({
     '',
     'Image direction:',
     '- keep the same overall product/category and target user',
-    '- variation 1 should emphasize mood and emotional tone',
-    '- variation 2 should emphasize material, texture, and finish',
-    '- variation 3 should emphasize shape language, proportion, and detail',
+    '- create a single product/style concept image, not a board of multiple options',
+    '- do not place three images, three panels, or before/after comparisons inside the output',
     '- no text overlay, no UI, no watermark',
     '- high-quality style board or product concept visual suitable for user selection',
   ].join('\n')
@@ -558,6 +558,13 @@ function sanitizeAssistantText(text: string) {
     /제공된 텍스트를 복사하여 사용하시면 됩니다\.?/i,
     /파일 형태로 제공할 수 없습니다\.?/i,
     /pdf로는 제공할 수 없습니다\.?/i,
+    /generate_design_image/i,
+    /tool[_\s-]?call/i,
+    /tool[_\s-]?result/i,
+    /calling tool/i,
+    /도구를\s*(호출|사용)/i,
+    /함수를\s*호출/i,
+    /Nano Banana\s*(API|api)\s*(호출|요청)/i,
   ]
 
   const lines = text
@@ -706,51 +713,65 @@ export async function POST(req: Request) {
       [...normalizedMessages]
         .reverse()
         .find((message) => message.role === 'user')?.content ?? ''
+    const isStyleReferenceSelectionTurn =
+      currentStageKey === 'step_4_style' &&
+      hasStyleReferenceSelection(lastUserMessage)
 
     const result = await generateText({
       model: google('gemini-2.5-flash'),
       system,
-      messages,
+      messages: isStyleReferenceSelectionTurn
+        ? [
+            ...messages,
+            {
+              role: 'user',
+              content:
+                'Internal instruction: The user has selected one of the already generated style reference images. Do not call generate_design_image or any image generation tool in this turn. Summarize the selected direction into shape, color, and material guidelines, then move to STEP 5 if conditions are met.',
+            },
+          ]
+        : messages,
       stopWhen: ({ steps }) =>
         steps.length >= 1 &&
         steps[steps.length - 1].toolCalls.length === 0,
-      tools: {
-        generate_design_image: tool({
-          description:
-            'Generate product concept or final design images with Gemini Nano Banana and return data URL images.',
-          inputSchema: z.object({
-            prompt: z
-              .string()
-              .min(1)
-              .describe('Detailed image generation prompt for the desired visual'),
-            count: z
-              .number()
-              .int()
-              .min(1)
-              .max(4)
-              .default(1)
-              .describe('Number of image variations to create'),
-            model: z
-              .enum(['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview'])
-              .default('gemini-3.1-flash-image-preview')
-              .describe('Nano Banana model to use'),
-          }),
-          execute: async ({ prompt, count, model }) => {
-            generatedImagePayload = await generateNanoBananaImages({
-              prompt,
-              count,
-              model,
-            })
+      tools: isStyleReferenceSelectionTurn
+        ? undefined
+        : {
+            generate_design_image: tool({
+              description:
+                'Generate product concept or final design images with Gemini Nano Banana and return data URL images.',
+              inputSchema: z.object({
+                prompt: z
+                  .string()
+                  .min(1)
+                  .describe('Detailed image generation prompt for the desired visual'),
+                count: z
+                  .number()
+                  .int()
+                  .min(1)
+                  .max(4)
+                  .default(1)
+                  .describe('Number of image variations to create'),
+                model: z
+                  .enum(['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview'])
+                  .default('gemini-3.1-flash-image-preview')
+                  .describe('Nano Banana model to use'),
+              }),
+              execute: async ({ prompt, count, model }) => {
+                generatedImagePayload = await generateNanoBananaImages({
+                  prompt,
+                  count,
+                  model,
+                })
 
-            return {
-              status: 'success',
-              message: `${generatedImagePayload.images.length} image variation(s) generated successfully.`,
-              count: generatedImagePayload.images.length,
-              model: generatedImagePayload.model,
-            }
+                return {
+                  status: 'success',
+                  message: `${generatedImagePayload.images.length} image variation(s) generated successfully.`,
+                  count: generatedImagePayload.images.length,
+                  model: generatedImagePayload.model,
+                }
+              },
+            }),
           },
-        }),
-      },
     })
 
     const { cleanedText, stageMeta: parsedStageMeta } = parseStageMeta(

@@ -24,6 +24,7 @@ import { saveGeneratedProjectThumbnail } from '@/lib/project-thumbnail'
 import { createClient } from '@/lib/supabase/client'
 import {
   SIDEBAR_STEPS,
+  STAGE_DEFINITIONS,
   getSidebarStepIndex,
   isKnownStageKey,
   type StageKey,
@@ -35,8 +36,22 @@ type ChatMessage = {
   content: string
   seq_order?: number
   active_agent?: string | null
+  created_at?: string | null
+  stage_key?: StageKey
   generatedImages?: string[]
   generatedImagePrompt?: string | null
+}
+
+type ChatApiMessage = {
+  role: string
+  content: string
+}
+
+type StageTimelineItem = {
+  stage_key: StageKey
+  entered_at: string
+  exited_at: string | null
+  stage_order: number
 }
 
 function normalizeAssistantMessage(message: ChatMessage) {
@@ -55,6 +70,17 @@ function normalizeAssistantMessage(message: ChatMessage) {
     imageBlock,
     rfpJson,
   }
+}
+
+function buildChatApiMessages(messages: ChatMessage[]): ChatApiMessage[] {
+  return messages.map((message) => {
+    const { cleanedText } = extractGeneratedImagesBlock(message.content)
+
+    return {
+      role: message.role,
+      content: cleanedText,
+    }
+  })
 }
 
 function parsePersonaData(content: string) {
@@ -87,11 +113,78 @@ function parsePersonaData(content: string) {
       .replace(/^[-•]\s*/, '')
       .trim()
 
+  const isPersonaNoiseLine = (line: string) =>
+    /^\[?(리서치 진행|페르소나 수정|이대로 진행|조정하기|저장하기)\]?$/.test(
+      line
+    ) ||
+    /이미지를 생성했습니다|아래 시안|수정 방향|페르소나의 프로필|카드 블록 종료/.test(
+      line
+    ) ||
+    /이 페르소나로.*리서치|리서치를 진행할까요|아니면 페르소나|페르소나를 수정할까요/.test(
+      line
+    )
+
+  const trimCardValue = (line: string) =>
+    line
+      .replace(/^\[(리서치 진행|페르소나 수정)\]$/, '')
+      .replace(/^핵심 문제\s*\(.+\)$/i, '')
+      .replace(/^핵심 문제\s*3개만 작성,?\s*/i, '')
+      .replace(/^핵심 문제\s*:?/i, '')
+      .replace(/^[-•]\s*/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+  const isTemplateGuideValue = (line: string) =>
+    /^\(.+\)$/.test(line) ||
+    /\d+자 이내|서술형 금지|요약\s*\/|실제 성공 키워드|실제 기대 변화|실제 재사용 이유/.test(
+      line
+    )
+
+  const normalizeBehaviorMap = (lines: string[]) => {
+    const normalized: string[] = []
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]
+      const stepMatch = line.match(/^Step\s*(\d+)\s*:\s*(.*)$/i)
+
+      if (!stepMatch) {
+        normalized.push(line)
+        continue
+      }
+
+      const stepNumber = stepMatch[1]
+      const rawValue = stepMatch[2].trim()
+      const nextLine = lines[index + 1]?.trim()
+      const useNextLine =
+        (!rawValue || isTemplateGuideValue(rawValue)) &&
+        nextLine &&
+        !/^Step\s*\d+\s*:/i.test(nextLine) &&
+        !isTemplateGuideValue(nextLine)
+
+      if (useNextLine) {
+        normalized.push(`Step ${stepNumber}: ${nextLine}`)
+        index += 1
+        continue
+      }
+
+      if (rawValue && !isTemplateGuideValue(rawValue)) {
+        normalized.push(`Step ${stepNumber}: ${rawValue}`)
+      }
+    }
+
+    return normalized
+  }
+
+  const filterTemplateGuideLines = (lines: string[]) =>
+    lines.filter((line) => !isTemplateGuideValue(line))
+
   const normalizeLines = (raw: string) => {
     const lines = raw
       .split('\n')
       .map(cleanLine)
+      .map(trimCardValue)
       .filter(Boolean)
+      .filter((line) => !isPersonaNoiseLine(line))
       .filter((line) => !/^```/.test(line))
       .filter((line) => !/^[-–—]+$/.test(line))
 
@@ -134,12 +227,22 @@ function parsePersonaData(content: string) {
   }
 
   const successLines = extractSection('Success')
+  const genericSuccessLabels = new Set(['핵심가치', '기대효과', '기대효과2'])
   const successData = successLines
     .map((line, index, lines) => {
       if (line.startsWith('#')) {
+        const tag = line.replace(/^#/, '').trim()
+        const desc = lines[index + 1]?.startsWith('#')
+          ? ''
+          : (lines[index + 1] ?? '')
+
+        if (genericSuccessLabels.has(tag)) {
+          return desc ? { tag: desc, desc: '' } : null
+        }
+
         return {
-          tag: line.replace(/^#/, '').trim(),
-          desc: lines[index + 1]?.startsWith('#') ? '' : (lines[index + 1] ?? ''),
+          tag,
+          desc,
         }
       }
 
@@ -148,9 +251,16 @@ function parsePersonaData(content: string) {
       }
 
       const [tag, ...descParts] = line.split('→').map((s) => s.trim())
+      const normalizedTag = tag.replace(/^#/, '').trim()
+      const desc = descParts.join(' ')
+
+      if (genericSuccessLabels.has(normalizedTag)) {
+        return desc ? { tag: desc, desc: '' } : null
+      }
+
       return {
-        tag: tag.replace(/^#/, '').trim(),
-        desc: descParts.join(' '),
+        tag: normalizedTag,
+        desc,
       }
     })
     .filter(
@@ -158,23 +268,31 @@ function parsePersonaData(content: string) {
         Boolean(item?.tag || item?.desc)
     )
 
+  const userLines = extractSection('1\\.\\s*User').length
+    ? extractSection('1\\.\\s*User')
+    : extractSection('User')
+  const behaviorMapLines = extractSection('2\\.\\s*Behavior\\s*Map').length
+    ? extractSection('2\\.\\s*Behavior\\s*Map')
+    : extractSection('Behavior\\s*Map')
+  const correlationAnalysisLines = extractSection(
+    '3\\.\\s*Correlation\\s*Analysis'
+  ).length
+    ? extractSection('3\\.\\s*Correlation\\s*Analysis')
+    : extractSection('Correlation\\s*Analysis')
+  const problemLines = extractSection('4\\.\\s*Problem').length
+    ? extractSection('4\\.\\s*Problem')
+    : extractSection('Problem')
+  const decisionLines = extractSection('5\\.\\s*Decision').length
+    ? extractSection('5\\.\\s*Decision')
+    : extractSection('Decision')
+
   const parsed = {
-    user: extractSection('1\\.\\s*User').length
-      ? extractSection('1\\.\\s*User')
-      : extractSection('User'),
-    behaviorMap: extractSection('2\\.\\s*Behavior\\s*Map').length
-      ? extractSection('2\\.\\s*Behavior\\s*Map')
-      : extractSection('Behavior\\s*Map'),
-    correlationAnalysis: extractSection('3\\.\\s*Correlation\\s*Analysis').length
-      ? extractSection('3\\.\\s*Correlation\\s*Analysis')
-      : extractSection('Correlation\\s*Analysis'),
-    problem: extractSection('4\\.\\s*Problem').length
-      ? extractSection('4\\.\\s*Problem')
-      : extractSection('Problem'),
+    user: filterTemplateGuideLines(userLines),
+    behaviorMap: normalizeBehaviorMap(behaviorMapLines),
+    correlationAnalysis: filterTemplateGuideLines(correlationAnalysisLines),
+    problem: filterTemplateGuideLines(problemLines),
     success: successData,
-    decision: extractSection('5\\.\\s*Decision').length
-      ? extractSection('5\\.\\s*Decision')
-      : extractSection('Decision'),
+    decision: filterTemplateGuideLines(decisionLines),
     imageUrl,
   }
 
@@ -279,6 +397,46 @@ function getStageExperts(stageKey: StageKey): ExpertKey[] {
   }
 }
 
+function getStageLabel(stageKey: StageKey) {
+  return (
+    STAGE_DEFINITIONS.find((stage) => stage.key === stageKey)?.sidebarLabel ??
+    '제품 아이디어&개발 조건 정리'
+  )
+}
+
+function getStageSignature(stageKey: StageKey) {
+  return `${stageKey}:${getStageExperts(stageKey).join(',')}`
+}
+
+function StageDivider({ stageKey }: { stageKey: StageKey }) {
+  const experts = getStageExperts(stageKey)
+  const expertLabels = experts
+    .map((expert) => getExpertDefinition(expert).label)
+    .join(', ')
+
+  return (
+    <div className="flex items-center gap-2 py-1">
+      <div className="h-px flex-1 bg-gray-100" />
+      <div className="inline-flex max-w-[78%] items-center gap-2 rounded-full bg-white px-3 py-1.5 shadow-sm outline outline-1 outline-gray-100">
+        <div className="flex -space-x-1">
+          {experts.map((expert) => (
+            <ExpertAvatar
+              key={expert}
+              expertKey={expert}
+              selected
+              className="h-5 w-5 ring-2 ring-white"
+            />
+          ))}
+        </div>
+        <span className="truncate text-xs font-medium text-slate-500">
+          {getStageLabel(stageKey)} · 참여 전문가: {expertLabels}
+        </span>
+      </div>
+      <div className="h-px flex-1 bg-gray-100" />
+    </div>
+  )
+}
+
 export default function ChatPage({
   projectId,
   projectTitle,
@@ -300,6 +458,7 @@ export default function ChatPage({
   const [latestRfpContent, setLatestRfpContent] = useState<string | null>(null)
   const [latestGeneratedImageBlock, setLatestGeneratedImageBlock] =
     useState<GeneratedImageBlock | null>(null)
+  const [stageTimeline, setStageTimeline] = useState<StageTimelineItem[]>([])
   const [selectedGeneratedImages, setSelectedGeneratedImages] = useState<
     Record<string, number>
   >({})
@@ -354,6 +513,63 @@ export default function ChatPage({
         message.role === 'assistant' &&
         (!message.active_agent || message.active_agent === 'aidee')
     )?.id
+
+  const getMessageStageKey = (message: ChatMessage): StageKey => {
+    if (message.stage_key) {
+      return message.stage_key
+    }
+
+    if (!message.created_at || stageTimeline.length === 0) {
+      return currentStageKey
+    }
+
+    const messageTime = new Date(message.created_at).getTime()
+    const exactStage = stageTimeline.find((stage) => {
+      const enteredAt = new Date(stage.entered_at).getTime()
+      const exitedAt = stage.exited_at
+        ? new Date(stage.exited_at).getTime()
+        : Number.POSITIVE_INFINITY
+
+      return messageTime >= enteredAt && messageTime <= exitedAt
+    })
+
+    if (exactStage) {
+      return exactStage.stage_key
+    }
+
+    const nearestPreviousStage = [...stageTimeline]
+      .reverse()
+      .find((stage) => new Date(stage.entered_at).getTime() <= messageTime)
+
+    return nearestPreviousStage?.stage_key ?? currentStageKey
+  }
+
+  const getResponseStageKey = (
+    response: Response,
+    fallbackStageKey: StageKey
+  ) => {
+    const currentStageHeader = response.headers.get('x-aidee-current-stage')
+    const nextStageHeader = response.headers.get('x-aidee-next-stage')
+
+    if (currentStageHeader && isKnownStageKey(currentStageHeader)) {
+      return currentStageHeader
+    }
+
+    if (nextStageHeader && isKnownStageKey(nextStageHeader)) {
+      return nextStageHeader
+    }
+
+    return fallbackStageKey
+  }
+
+  const latestRenderableMessage = [...messages]
+    .reverse()
+    .find((message) => !nestedExpertMessageIds.has(message.id))
+  const shouldShowCurrentStageDivider =
+    Boolean(latestRenderableMessage) &&
+    latestRenderableMessage !== undefined &&
+    getStageSignature(getMessageStageKey(latestRenderableMessage)) !==
+      getStageSignature(currentStageKey)
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value)
@@ -418,6 +634,34 @@ export default function ChatPage({
     [projectId]
   )
 
+  const fetchStageTimeline = useCallback(async () => {
+    const supabase = createClient()
+    const { data, error } = await supabase
+      .from('design_stages')
+      .select('stage_key, entered_at, exited_at, stage_order')
+      .eq('project_id', projectId)
+      .order('entered_at', { ascending: true })
+
+    if (error) {
+      console.error('[stage timeline] failed to fetch stages:', error)
+      return
+    }
+
+    const timeline = ((data ?? []) as Array<{
+      stage_key: string
+      entered_at: string
+      exited_at: string | null
+      stage_order: number
+    }>)
+      .filter((stage) => isKnownStageKey(stage.stage_key))
+      .map((stage) => ({
+        ...stage,
+        stage_key: stage.stage_key as StageKey,
+      }))
+
+    setStageTimeline(timeline)
+  }, [projectId])
+
   const transitionStage = useCallback(
     async (nextStageKey: StageKey, exitReason = 'transition') => {
       if (!sessionId) {
@@ -446,16 +690,27 @@ export default function ChatPage({
 
       if (data.currentStageKey) {
         setCurrentStageKey(data.currentStageKey)
+        await fetchStageTimeline()
       }
     },
-    [projectId, sessionId]
+    [fetchStageTimeline, projectId, sessionId]
   )
 
   const applyStageHeaders = useCallback(
     async (response: Response, aiContent: string) => {
+      const currentStageHeader = response.headers.get('x-aidee-current-stage')
       const nextStageHeader = response.headers.get('x-aidee-next-stage')
       const transitionHeader = response.headers.get('x-aidee-transition')
       const reasonHeader = response.headers.get('x-aidee-reason') ?? 'transition'
+
+      if (
+        currentStageHeader &&
+        isKnownStageKey(currentStageHeader) &&
+        currentStageHeader !== currentStageKey
+      ) {
+        await transitionStage(currentStageHeader, `${reasonHeader}_resync`)
+        return
+      }
 
       if (
         transitionHeader === 'yes' &&
@@ -498,10 +753,12 @@ export default function ChatPage({
       if (data.currentStageKey) {
         setCurrentStageKey(data.currentStageKey)
       }
+
+      await fetchStageTimeline()
     }
 
     createSession().catch((error) => console.error(error))
-  }, [projectId])
+  }, [fetchStageTimeline, projectId])
 
   useEffect(() => {
     const fetchMessages = async () => {
@@ -513,7 +770,7 @@ export default function ChatPage({
       const supabase = createClient()
       const { data } = await supabase
         .from('messages')
-        .select('id, role, content, seq_order, active_agent')
+        .select('id, role, content, seq_order, active_agent, created_at')
         .eq('project_id', projectId)
         .order('seq_order', { ascending: true })
 
@@ -588,7 +845,18 @@ export default function ChatPage({
           const decoder = new TextDecoder()
           let aiContent = ''
           const aiMessageId = Date.now().toString()
-          setMessages([{ id: aiMessageId, role: 'assistant', content: '' }])
+          const createdAt = new Date().toISOString()
+          const responseStageKey = getResponseStageKey(response, currentStageKey)
+          setMessages([
+            {
+              id: aiMessageId,
+              role: 'assistant',
+              content: '',
+              active_agent: 'aidee',
+              created_at: createdAt,
+              stage_key: responseStageKey,
+            },
+          ])
 
           while (true) {
             const { done, value } = await reader.read()
@@ -598,7 +866,14 @@ export default function ChatPage({
 
             aiContent += decoder.decode(value, { stream: true })
             setMessages([
-              { id: aiMessageId, role: 'assistant', content: aiContent },
+              {
+                id: aiMessageId,
+                role: 'assistant',
+                content: aiContent,
+                active_agent: 'aidee',
+                created_at: createdAt,
+                stage_key: responseStageKey,
+              },
             ])
           }
 
@@ -609,6 +884,9 @@ export default function ChatPage({
               id: aiMessageId,
               role: 'assistant',
               content: aiContent,
+              active_agent: 'aidee',
+              created_at: createdAt,
+              stage_key: responseStageKey,
             })
 
           if (imageBlock) {
@@ -766,7 +1044,7 @@ export default function ChatPage({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        messages: nextMessages,
+        messages: buildChatApiMessages(nextMessages),
         projectId,
         currentStageKey: stageKeyForRequest,
         activeExpert: expertForRequest,
@@ -784,9 +1062,11 @@ export default function ChatPage({
       throw new Error('No response body reader available')
     }
 
+    const responseStageKey = getResponseStageKey(response, stageKeyForRequest)
     const decoder = new TextDecoder()
     let aiContent = ''
     const aiMessageId = (Date.now() + 1).toString()
+    const createdAt = new Date().toISOString()
 
     setMessages((prev) => [
       ...prev,
@@ -795,6 +1075,8 @@ export default function ChatPage({
         role: 'assistant',
         content: '',
         active_agent: expertForRequest,
+        created_at: createdAt,
+        stage_key: responseStageKey,
       },
     ])
 
@@ -818,6 +1100,8 @@ export default function ChatPage({
       role: 'assistant',
       content: aiContent,
       active_agent: expertForRequest,
+      created_at: createdAt,
+      stage_key: responseStageKey,
     })
 
     if (rfpJson) {
@@ -894,6 +1178,8 @@ export default function ChatPage({
       role: 'user',
       content: input,
       active_agent: activeExpert,
+      created_at: new Date().toISOString(),
+      stage_key: currentStageKey,
     }
 
     const nextMessages = [...messages, userMessage]
@@ -939,6 +1225,8 @@ export default function ChatPage({
       role: 'user',
       content: actionText,
       active_agent: 'aidee',
+      created_at: new Date().toISOString(),
+      stage_key: currentStageKey,
     }
 
     const nextMessages = [...messages, userMessage]
@@ -973,6 +1261,9 @@ export default function ChatPage({
           role: 'assistant',
           content:
             '리서치 단계로 넘어가는 중 오류가 발생했어요. 다시 한 번 눌러주세요.',
+          active_agent: 'aidee',
+          created_at: new Date().toISOString(),
+          stage_key: currentStageKey,
         },
       ])
     } finally {
@@ -983,7 +1274,7 @@ export default function ChatPage({
   const sendGeneratedImageSelection = async (
     messageId: string,
     imageIndex: number,
-    prompt?: string | null
+    _prompt?: string | null
   ) => {
     if (isLoading) {
       return
@@ -991,8 +1282,7 @@ export default function ChatPage({
 
     const actionText = [
       `스타일 레퍼런스 ${imageIndex + 1}번을 선택합니다.`,
-      prompt ? `선택 기준 프롬프트: ${prompt}` : '',
-      '이 방향을 기준으로 다음 디자인 제안을 진행해주세요.',
+      '이 방향을 기준으로 형태, 색감, 재질 방향성을 정리하고 다음 단계로 진행해주세요.',
     ]
       .filter(Boolean)
       .join('\n')
@@ -1002,6 +1292,8 @@ export default function ChatPage({
       role: 'user',
       content: actionText,
       active_agent: 'aidee',
+      created_at: new Date().toISOString(),
+      stage_key: currentStageKey,
     }
 
     const nextMessages = [...messages, userMessage]
@@ -1030,6 +1322,9 @@ export default function ChatPage({
           role: 'assistant',
           content:
             '선택 결과를 반영하는 중 오류가 발생했어요. 다시 한 번 선택해주세요.',
+          active_agent: 'aidee',
+          created_at: new Date().toISOString(),
+          stage_key: currentStageKey,
         },
       ])
     } finally {
@@ -1186,34 +1481,31 @@ export default function ChatPage({
             ) : null}
           </div>
 
-          <div className="flex items-center gap-2">
-            <div className="h-px flex-1 bg-gray-100" />
-            <div className="flex -space-x-1">
-              {currentStageExperts.map((expert) => (
-                <ExpertAvatar
-                  key={expert}
-                  expertKey={expert}
-                  selected
-                  className="h-6 w-6 ring-2 ring-white"
-                />
-              ))}
-            </div>
-            <p className="text-xs font-medium text-slate-500">
-              참여 전문가: {currentStageExpertLabels}
-            </p>
-            <div className="h-px flex-1 bg-gray-100" />
-          </div>
-
           {messages.length === 0 && !isLoading ? (
-            <div className="max-w-[514px] rounded-[24px] rounded-tl-none bg-gray-200 p-5 text-base leading-relaxed font-medium text-neutral-900">
-              안녕하세요! Aidee입니다. 기획 중인 프로젝트를 함께 정리해볼게요.
-            </div>
+            <>
+              <StageDivider stageKey={currentStageKey} />
+              <div className="max-w-[514px] rounded-[24px] rounded-tl-none bg-gray-200 p-5 text-base leading-relaxed font-medium text-neutral-900">
+                안녕하세요! Aidee입니다. 기획 중인 프로젝트를 함께 정리해볼게요.
+              </div>
+            </>
           ) : null}
 
-          {messages.map((m) => {
+          {messages.map((m, index) => {
             if (nestedExpertMessageIds.has(m.id)) {
               return null
             }
+
+            const stageKeyForMessage = getMessageStageKey(m)
+            const stageSignature = getStageSignature(stageKeyForMessage)
+            const previousRenderableMessage = messages
+              .slice(0, index)
+              .reverse()
+              .find((message) => !nestedExpertMessageIds.has(message.id))
+            const previousStageSignature = previousRenderableMessage
+              ? getStageSignature(getMessageStageKey(previousRenderableMessage))
+              : null
+            const shouldShowStageDivider =
+              stageSignature !== previousStageSignature
 
             const isPersonaCard =
               m.role === 'assistant' &&
@@ -1227,12 +1519,16 @@ export default function ChatPage({
 
               if (personaData) {
                 return (
-                  <PersonaCard
-                    key={m.id}
-                    data={personaData}
-                    onProceed={() => sendPersonaAction('리서치 진행')}
-                    onAdjust={() => sendPersonaAction('페르소나 수정')}
-                  />
+                  <div key={m.id} className="space-y-6">
+                    {shouldShowStageDivider ? (
+                      <StageDivider stageKey={stageKeyForMessage} />
+                    ) : null}
+                    <PersonaCard
+                      data={personaData}
+                      onProceed={() => sendPersonaAction('리서치 진행')}
+                      onAdjust={() => sendPersonaAction('페르소나 수정')}
+                    />
+                  </div>
                 )
               }
             }
@@ -1240,58 +1536,66 @@ export default function ChatPage({
             return (
               <div
                 key={m.id}
-                className={`flex flex-col ${
-                  m.role === 'user' ? 'items-end' : 'items-start'
-                }`}
+                className="space-y-6"
               >
-                {m.role === 'assistant' && isExpertKey(m.active_agent) ? (
-                  <div className="mb-1 flex items-center gap-1.5 px-1">
-                    <ExpertAvatar
-                      expertKey={m.active_agent}
-                      selected
-                      className="h-5 w-5"
-                    />
-                    <span className="text-xs font-medium text-slate-400">
-                      {getExpertDefinition(m.active_agent).label}
-                    </span>
-                  </div>
+                {shouldShowStageDivider ? (
+                  <StageDivider stageKey={stageKeyForMessage} />
                 ) : null}
                 <div
-                  className={`max-w-[514px] rounded-[24px] p-5 text-base leading-relaxed font-medium shadow-sm ${
-                    m.role === 'user'
-                      ? 'rounded-tr-none bg-gray-100 text-neutral-900'
-                      : 'rounded-tl-none bg-gray-200 text-neutral-900'
+                  className={`flex flex-col ${
+                    m.role === 'user' ? 'items-end' : 'items-start'
                   }`}
                 >
-                  <div className="prose prose-sm prose-p:my-0 prose-p:leading-7 prose-li:my-0 prose-headings:mb-3 prose-strong:text-neutral-900 max-w-none break-words whitespace-pre-wrap">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkBreaks]}
-                      components={{
-                        p: ({ children }) => (
-                          <p className="mb-1 leading-7 last:mb-0">{children}</p>
-                        ),
-                        ul: ({ children }) => (
-                          <ul className="my-3 list-disc space-y-1 pl-5">
-                            {children}
-                          </ul>
-                        ),
-                        ol: ({ children }) => (
-                          <ol className="my-3 list-decimal space-y-1 pl-5">
-                            {children}
-                          </ol>
-                        ),
-                        li: ({ children }) => (
-                          <li className="leading-5 [&>p]:mb-0 [&>p]:inline">
-                            {children}
-                          </li>
-                        ),
-                        br: () => <br className="block h-1" />,
-                      }}
-                    >
-                      {m.content}
-                    </ReactMarkdown>
+                  {m.role === 'assistant' && isExpertKey(m.active_agent) ? (
+                    <div className="mb-1 flex items-center gap-1.5 px-1">
+                      <ExpertAvatar
+                        expertKey={m.active_agent}
+                        selected
+                        className="h-5 w-5"
+                      />
+                      <span className="text-xs font-medium text-slate-400">
+                        {getExpertDefinition(m.active_agent).label}
+                      </span>
+                    </div>
+                  ) : null}
+                  <div
+                    className={`max-w-[514px] rounded-[24px] p-5 text-base leading-relaxed font-medium shadow-sm ${
+                      m.role === 'user'
+                        ? 'rounded-tr-none bg-gray-100 text-neutral-900'
+                        : 'rounded-tl-none bg-gray-200 text-neutral-900'
+                    }`}
+                  >
+                    <div className="prose prose-sm prose-p:my-0 prose-p:leading-7 prose-li:my-0 prose-headings:mb-3 prose-strong:text-neutral-900 max-w-none break-words whitespace-pre-wrap">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkBreaks]}
+                        components={{
+                          p: ({ children }) => (
+                            <p className="mb-1 leading-7 last:mb-0">
+                              {children}
+                            </p>
+                          ),
+                          ul: ({ children }) => (
+                            <ul className="my-3 list-disc space-y-1 pl-5">
+                              {children}
+                            </ul>
+                          ),
+                          ol: ({ children }) => (
+                            <ol className="my-3 list-decimal space-y-1 pl-5">
+                              {children}
+                            </ol>
+                          ),
+                          li: ({ children }) => (
+                            <li className="leading-5 [&>p]:mb-0 [&>p]:inline">
+                              {children}
+                            </li>
+                          ),
+                          br: () => <br className="block h-1" />,
+                        }}
+                      >
+                        {m.content}
+                      </ReactMarkdown>
+                    </div>
                   </div>
-                </div>
                 {m.role === 'assistant' && m.generatedImages?.length ? (
                   <div className="mt-3 w-full max-w-[760px] space-y-2">
                     <div className="flex items-center justify-between gap-3">
@@ -1450,9 +1754,14 @@ export default function ChatPage({
                     })}
                   </div>
                 ) : null}
+                </div>
               </div>
             )
           })}
+
+          {shouldShowCurrentStageDivider ? (
+            <StageDivider stageKey={currentStageKey} />
+          ) : null}
 
           {isLoading && activeExpert === 'aidee' ? (
             <div className="flex items-center gap-3 rounded-3xl bg-gray-100 px-5 py-4">
@@ -1526,7 +1835,16 @@ export default function ChatPage({
                 onChange={handleInput}
                 onFocus={() => setIsExpertPickerOpen(false)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
+                  const nativeEvent = e.nativeEvent as KeyboardEvent & {
+                    isComposing?: boolean
+                  }
+
+                  if (
+                    e.key === 'Enter' &&
+                    !e.shiftKey &&
+                    !nativeEvent.isComposing &&
+                    nativeEvent.keyCode !== 229
+                  ) {
                     e.preventDefault()
                     void onFormSubmit(e)
                   }

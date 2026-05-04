@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import {
   Document,
   Font,
+  Image,
   Page,
   StyleSheet,
   Text,
@@ -72,6 +73,93 @@ const styles = StyleSheet.create({
     marginBottom: 3,
     paddingLeft: 10,
   },
+  onePage: {
+    paddingTop: 24,
+    paddingBottom: 24,
+    paddingHorizontal: 26,
+    fontFamily: 'NotoSansKR',
+    fontSize: 8.5,
+    color: '#111827',
+    lineHeight: 1.35,
+  },
+  onePageHeader: {
+    marginBottom: 10,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#D1D5DB',
+  },
+  onePageTitle: {
+    fontSize: 18,
+    marginBottom: 4,
+  },
+  onePageSubtitle: {
+    fontSize: 9,
+    color: '#4B5563',
+  },
+  onePageGrid: {
+    display: 'flex',
+    flexDirection: 'row',
+    gap: 12,
+  },
+  onePageLeft: {
+    width: '38%',
+  },
+  onePageRight: {
+    width: '62%',
+  },
+  heroImage: {
+    width: '100%',
+    height: 210,
+    objectFit: 'cover',
+    borderRadius: 10,
+    marginBottom: 8,
+  },
+  imagePlaceholder: {
+    width: '100%',
+    height: 210,
+    borderRadius: 10,
+    backgroundColor: '#F3F4F6',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  compactSection: {
+    marginBottom: 8,
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: '#F9FAFB',
+  },
+  compactSectionTitle: {
+    fontSize: 10,
+    color: '#1D4ED8',
+    marginBottom: 4,
+  },
+  compactLabel: {
+    fontSize: 7.5,
+    color: '#6B7280',
+    marginBottom: 1,
+  },
+  compactValue: {
+    fontSize: 8.5,
+    color: '#111827',
+    marginBottom: 3,
+  },
+  tagRow: {
+    display: 'flex',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginTop: 3,
+  },
+  tag: {
+    paddingVertical: 2,
+    paddingHorizontal: 5,
+    borderRadius: 999,
+    backgroundColor: '#E0F2FE',
+    color: '#075985',
+    fontSize: 7.5,
+  },
 })
 
 function BulletList({ items }: { items: string[] }) {
@@ -91,6 +179,39 @@ function Field({ label, value }: { label: string; value: string }) {
     <View style={styles.row}>
       <Text style={styles.label}>{label}</Text>
       <Text style={styles.value}>{value}</Text>
+    </View>
+  )
+}
+
+function CompactField({ label, value }: { label: string; value: string }) {
+  return (
+    <View>
+      <Text style={styles.compactLabel}>{label}</Text>
+      <Text style={styles.compactValue}>{value}</Text>
+    </View>
+  )
+}
+
+function CompactBulletList({ items }: { items: string[] }) {
+  return (
+    <View>
+      {items.slice(0, 4).map((item, index) => (
+        <Text key={`${item}-${index}`} style={styles.compactValue}>
+          • {item}
+        </Text>
+      ))}
+    </View>
+  )
+}
+
+function TagList({ items }: { items: string[] }) {
+  return (
+    <View style={styles.tagRow}>
+      {items.slice(0, 5).map((item, index) => (
+        <Text key={`${item}-${index}`} style={styles.tag}>
+          {item}
+        </Text>
+      ))}
     </View>
   )
 }
@@ -160,6 +281,93 @@ export function RfpPdfDocument({ rfp }: { rfp: RfpDocument }) {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>8. 다음 액션</Text>
           <BulletList items={rfp.nextActions} />
+        </View>
+      </Page>
+    </Document>
+  )
+}
+
+export function OnePageRfpPdfDocument({
+  rfp,
+  selectedReferenceImage,
+}: {
+  rfp: RfpDocument
+  selectedReferenceImage?: string | null
+}) {
+  return (
+    <Document title={`${rfp.projectName} One Page RFP`}>
+      <Page size="A4" style={styles.onePage}>
+        <View style={styles.onePageHeader}>
+          <Text style={styles.onePageTitle}>One Page Design RFP</Text>
+          <Text style={styles.onePageSubtitle}>
+            {rfp.projectName} · 선택 레퍼런스와 디자인 방향 요약
+          </Text>
+        </View>
+
+        <View style={styles.onePageGrid}>
+          <View style={styles.onePageLeft}>
+            {selectedReferenceImage ? (
+              <Image src={selectedReferenceImage} style={styles.heroImage} />
+            ) : (
+              <View style={styles.imagePlaceholder}>
+                <Text style={styles.onePageSubtitle}>선택된 레퍼런스 이미지 없음</Text>
+              </View>
+            )}
+
+            <View style={styles.compactSection}>
+              <Text style={styles.compactSectionTitle}>스타일 키워드</Text>
+              <TagList items={rfp.styleKeywords} />
+            </View>
+
+            <View style={styles.compactSection}>
+              <Text style={styles.compactSectionTitle}>레퍼런스 요약</Text>
+              <Text style={styles.compactValue}>{rfp.referenceSummary}</Text>
+            </View>
+
+            <View style={styles.compactSection}>
+              <Text style={styles.compactSectionTitle}>제외 방향</Text>
+              <CompactBulletList items={rfp.avoidDirections} />
+            </View>
+          </View>
+
+          <View style={styles.onePageRight}>
+            <View style={styles.compactSection}>
+              <Text style={styles.compactSectionTitle}>프로젝트 개요</Text>
+              <CompactField label="제품 정의" value={rfp.oneLineDefinition} />
+              <CompactField label="목표" value={rfp.projectGoal} />
+              <CompactField label="활용 목적" value={rfp.finalPurpose} />
+            </View>
+
+            <View style={styles.compactSection}>
+              <Text style={styles.compactSectionTitle}>타겟과 핵심 가치</Text>
+              <CompactField label="메인 타겟" value={rfp.mainTarget} />
+              <CompactField label="사용 상황" value={rfp.usageContext} />
+              <CompactField label="핵심 니즈" value={rfp.coreNeeds} />
+              <CompactField label="핵심 가치" value={rfp.coreValue} />
+            </View>
+
+            <View style={styles.compactSection}>
+              <Text style={styles.compactSectionTitle}>디자인 아이디어</Text>
+              <CompactField label="형태/크기 조건" value={rfp.sizeOrForm} />
+              <Text style={styles.compactLabel}>필수 기능</Text>
+              <CompactBulletList items={rfp.mustHaveFeatures} />
+            </View>
+
+            <View style={styles.compactSection}>
+              <Text style={styles.compactSectionTitle}>제작 조건</Text>
+              <CompactField label="예산" value={rfp.budgetRange} />
+              <CompactField label="기간" value={rfp.timeline} />
+              <Text style={styles.compactLabel}>구현 주의점</Text>
+              <CompactBulletList items={rfp.implementationNotes} />
+            </View>
+
+            <View style={styles.compactSection}>
+              <Text style={styles.compactSectionTitle}>완료 기준 / 다음 액션</Text>
+              <CompactBulletList
+                items={[...rfp.successCriteria.slice(0, 2), ...rfp.nextActions.slice(0, 2)]}
+              />
+            </View>
+          </View>
         </View>
       </Page>
     </Document>

@@ -15,7 +15,11 @@ import {
   type ExpertKey,
 } from '@/lib/experts'
 import { SYSTEM_PROMPT_TEMPLATE } from '@/lib/prompts'
-import { RFP_DOCUMENT_SCHEMA, buildRfpObjectPrompt } from '@/lib/rfp'
+import {
+  RFP_DOCUMENT_SCHEMA,
+  type RfpDocument,
+  buildRfpObjectPrompt,
+} from '@/lib/rfp'
 import { type StageKey, isKnownStageKey } from '@/lib/study'
 
 export const maxDuration = 60
@@ -410,6 +414,32 @@ function buildExpertCallPrompt(expert: ExpertKey) {
   ].join('\n')
 }
 
+function isRfpDocumentRequest(text: string) {
+  return /rfp|제안요청서|제안\s*요청서|문서\s*생성|pdf/i.test(text)
+}
+
+function isCompanyConnectionRequest(text: string) {
+  return /협력\s*업체|업체\s*연결|업체\s*추천|파트너|vendor|company/i.test(text)
+}
+
+function resolveIntentStageKey({
+  currentStageKey,
+  lastUserMessage,
+}: {
+  currentStageKey: StageKey
+  lastUserMessage: string
+}): StageKey {
+  if (isCompanyConnectionRequest(lastUserMessage)) {
+    return 'step_6_company'
+  }
+
+  if (isRfpDocumentRequest(lastUserMessage)) {
+    return 'step_6_rfp'
+  }
+
+  return currentStageKey
+}
+
 function getStageSpecificInstruction(currentStageKey: StageKey) {
   switch (currentStageKey) {
     case 'step_1_idea':
@@ -418,7 +448,7 @@ function getStageSpecificInstruction(currentStageKey: StageKey) {
 - 지금은 STEP 1입니다.
 - 프로젝트 생성 직후에는 먼저 저장된 정보를 기준점으로 정리하고, 부족한 정보를 묻는 질문 1개로 끝내세요.
 - STEP 1 확정 조건이 충족되면 STEP 2로 넘어가기 위해 사용자 명확화 질문을 이어가세요.
-- STEP 2로 넘어갈 준비가 되었다면 Persona Card를 출력하고, 마지막에 반드시 "리서치 진행 / 페르소나 수정" 선택을 물으세요.
+- STEP 1에서는 Persona Card를 절대 출력하지 마세요. Persona Card는 STEP 2 전용 산출물입니다.
 `.trim()
     case 'step_2_persona':
       return `
@@ -464,8 +494,19 @@ function getStageSpecificInstruction(currentStageKey: StageKey) {
 - 지금은 STEP 6 평가 및 RFP 문서 생성 단계입니다.
 - 정보가 충분하면 반드시 RFP 출력 템플릿대로 문서를 작성하세요.
 - 정보가 부족하면 RFP를 쓰지 말고 부족한 항목 1개만 질문하세요.
+- 어떤 경우에도 Persona Card 템플릿을 출력하지 마세요. RFP 문서와 Persona Card는 서로 다른 산출물입니다.
+- RFP 본문 작성이 끝나면 마지막에 "RFP 문서 다운로드 후 협력업체 연결로 이어갈 수 있습니다."를 1줄로 안내하세요.
 - 시스템은 이 RFP 본문을 그대로 PDF로 저장할 수 있습니다.
 - 따라서 "PDF로는 제공할 수 없다", "파일 형태로 직접 생성할 수 없다", "복사해서 사용해달라" 같은 제한 문구를 절대 말하지 마세요.
+`.trim()
+    case 'step_6_company':
+      return `
+[현재 단계 운영]
+- 지금은 STEP 6-2 협력업체 연결 단계입니다.
+- RFP 생성 이후의 실행 연결 단계로, Persona Card나 RFP 본문을 새로 생성하지 마세요.
+- 먼저 현재 프로젝트에 필요한 협력 유형을 디자인 고도화 / 브랜드·런칭·시장 검증 / 시제품 제작 중 1개로 판단하세요.
+- 실제 업체명·전화번호·홈페이지는 검증된 검색 결과 없이는 지어내지 마세요.
+- 업체 DB 또는 검색 결과가 없으면, 추천 협력 유형과 업체 선별 기준, 문의 시 전달할 핵심 RFP 요약만 출력하세요.
 `.trim()
     case 'step_4_definition':
       return `
@@ -538,7 +579,7 @@ ${expertInstruction ? `[전문가 전용 지시]\n${expertInstruction}` : ''}
 - 사용자에게 보여줄 실제 답변을 모두 작성한 뒤, 마지막 줄 아래에 반드시 아래 형식의 메타 블록을 추가하세요.
 - 메타 블록은 사용자에게 보여주기 위한 내용이 아니며, 형식을 절대 바꾸지 마세요.
 - current_stage와 next_stage는 다음 중 하나만 사용하세요:
-  step_1_idea, step_2_persona, step_2_research, step_3_direction, step_4_style, step_5_design, step_6_rfp, step_4_definition, step_5_rfp
+  step_1_idea, step_2_persona, step_2_research, step_3_direction, step_4_style, step_5_design, step_6_rfp, step_6_company, step_4_definition, step_5_rfp
 - transition은 yes 또는 no만 사용하세요.
 - reason은 짧은 영어 snake_case로 작성하세요.
 
@@ -572,6 +613,54 @@ function sanitizeAssistantText(text: string) {
     .filter((line) => !blockedPatterns.some((pattern) => pattern.test(line)))
 
   return lines.join('\n').trim()
+}
+
+function formatRfpMarkdown(rfp: RfpDocument) {
+  return [
+    '# 제품 제안요청서',
+    '',
+    '## 1. 프로젝트 개요',
+    `- 프로젝트명: ${rfp.projectName}`,
+    `- 제품 한 줄 정의: ${rfp.oneLineDefinition}`,
+    `- 프로젝트 목표: ${rfp.projectGoal}`,
+    `- 최종 활용 목적: ${rfp.finalPurpose}`,
+    '',
+    '## 2. 페르소나',
+    `- 메인 타겟: ${rfp.mainTarget}`,
+    `- 사용 상황(TPO): ${rfp.usageContext}`,
+    `- 핵심 니즈 / 문제: ${rfp.coreNeeds}`,
+    '',
+    '## 3. 제품 방향',
+    `- 핵심 가치: ${rfp.coreValue}`,
+    `- 스타일 키워드: ${rfp.styleKeywords.join(', ')}`,
+    `- 피해야 하는 방향: ${rfp.avoidDirections.join(', ')}`,
+    '',
+    '## 4. 기능 요구사항',
+    '- 반드시 포함할 핵심 기능',
+    ...rfp.mustHaveFeatures.map((item) => `- ${item}`),
+    '- 있으면 좋은 기능',
+    ...rfp.niceToHaveFeatures.map((item) => `- ${item}`),
+    '- 이번 범위에서 제외하는 기능',
+    ...rfp.excludedFeatures.map((item) => `- ${item}`),
+    '',
+    '## 5. 구현 및 제작 조건',
+    `- 예상 예산 범위: ${rfp.budgetRange}`,
+    `- 목표 기간: ${rfp.timeline}`,
+    `- 예상 크기 / 형태 조건: ${rfp.sizeOrForm}`,
+    '- 구현 시 주의할 점',
+    ...rfp.implementationNotes.map((item) => `- ${item}`),
+    '',
+    '## 6. 레퍼런스 및 시장 인사이트',
+    `- 참고 이미지/레퍼런스 요약: ${rfp.referenceSummary}`,
+    '- 리서치 핵심 인사이트',
+    ...rfp.researchInsights.map((item) => `- ${item}`),
+    '',
+    '## 7. 성공 기준',
+    ...rfp.successCriteria.map((item) => `- ${item}`),
+    '',
+    '## 8. 다음 액션',
+    ...rfp.nextActions.map((item) => `- ${item}`),
+  ].join('\n')
 }
 
 function parseStageMeta(text: string, fallbackStageKey: StageKey) {
@@ -651,7 +740,15 @@ export async function POST(req: Request) {
 
     const normalizedMessages = normalizeMessages(body.messages)
     const isInitialEntry = normalizedMessages.length === 0
-    const currentStageKey = body.currentStageKey ?? DEFAULT_STAGE_KEY
+    const requestedStageKey = body.currentStageKey ?? DEFAULT_STAGE_KEY
+    const lastUserMessage =
+      [...normalizedMessages]
+        .reverse()
+        .find((message) => message.role === 'user')?.content ?? ''
+    const currentStageKey = resolveIntentStageKey({
+      currentStageKey: requestedStageKey,
+      lastUserMessage,
+    })
     const activeExpert = isExpertKey(body.activeExpert)
       ? body.activeExpert
       : 'aidee'
@@ -708,11 +805,45 @@ export async function POST(req: Request) {
           ]
         : normalizedMessages
 
+    if (currentStageKey === 'step_6_rfp') {
+      try {
+        const requirementsText = buildRequirementsText(project)
+        const referenceContext = buildReferenceContext(referenceImages)
+        const conversation = buildConversationText(messages)
+
+        const rfpObjectResult = await generateObject({
+          model: google('gemini-2.5-flash'),
+          schema: RFP_DOCUMENT_SCHEMA,
+          prompt: buildRfpObjectPrompt({
+            projectTitle: project?.title || '제목 없음',
+            requirements: requirementsText,
+            referenceContext,
+            conversation,
+          }),
+        })
+
+        const markdown = formatRfpMarkdown(rfpObjectResult.object)
+        const finalText = `${markdown}
+
+<<AIDEE_RFP_JSON>>
+${JSON.stringify(rfpObjectResult.object, null, 2)}
+<</AIDEE_RFP_JSON>>`
+
+        return new Response(finalText, {
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'x-aidee-current-stage': 'step_6_rfp',
+            'x-aidee-next-stage': 'step_6_company',
+            'x-aidee-transition': 'yes',
+            'x-aidee-reason': 'rfp_completed',
+          },
+        })
+      } catch (error) {
+        console.error('RFP structured generation failed:', error)
+      }
+    }
+
     let generatedImagePayload: GeneratedImageBlock | null = null
-    const lastUserMessage =
-      [...normalizedMessages]
-        .reverse()
-        .find((message) => message.role === 'user')?.content ?? ''
     const isStyleReferenceSelectionTurn =
       currentStageKey === 'step_4_style' &&
       hasStyleReferenceSelection(lastUserMessage)

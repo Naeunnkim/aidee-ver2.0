@@ -54,6 +54,13 @@ type StageTimelineItem = {
   stage_order: number
 }
 
+type CompanyRecommendation = {
+  name: string
+  summary: string
+  website: string
+  highlight: string
+}
+
 function normalizeAssistantMessage(message: ChatMessage) {
   const { cleanedText: withoutImages, imageBlock } = extractGeneratedImagesBlock(
     message.content
@@ -390,6 +397,7 @@ function getStageExperts(stageKey: StageKey): ExpertKey[] {
     case 'step_5_design':
       return ['style_designer', 'engineer']
     case 'step_6_rfp':
+    case 'step_6_company':
     case 'step_5_rfp':
       return ['planner', 'engineer', 'marketer', 'style_designer']
     default:
@@ -433,6 +441,98 @@ function StageDivider({ stageKey }: { stageKey: StageKey }) {
         </span>
       </div>
       <div className="h-px flex-1 bg-gray-100" />
+    </div>
+  )
+}
+
+function buildCompanyRecommendations(
+  rfpJson: RfpDocument | null,
+  rfpContent: string | null
+): CompanyRecommendation[] {
+  const styleHint =
+    rfpJson?.styleKeywords.slice(0, 2).join(' · ') ||
+    (rfpContent ? 'RFP 기준' : '프로젝트 기준')
+  const targetHint =
+    rfpJson?.mainTarget.slice(0, 20) ||
+    rfpJson?.projectGoal.slice(0, 20) ||
+    '프로젝트 목적'
+
+  return [
+    {
+      name: 'Intenxiv',
+      summary: `${styleHint} 기반 디자인 고도화`,
+      website: 'example.com',
+      highlight: `핵심: ${targetHint}`,
+    },
+    {
+      name: '상상제작소',
+      summary: `${styleHint} 시제품 제작 / 목업 대응`,
+      website: 'example.com',
+      highlight: '핵심: 기구·회로·제작',
+    },
+    {
+      name: '(주) 한국기술',
+      summary: `${styleHint} 양산성 검토 / 제작 파트너`,
+      website: 'example.com',
+      highlight: '핵심: 제작 안정성',
+    },
+  ]
+}
+
+function CompanyRecommendationsPanel({
+  rfpJson,
+  rfpContent,
+}: {
+  rfpJson: RfpDocument | null
+  rfpContent: string | null
+}) {
+  const companies = buildCompanyRecommendations(rfpJson, rfpContent)
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="max-w-[602px] rounded-[24px] rounded-tl-none bg-gray-200 p-5 text-base leading-relaxed font-medium text-neutral-900">
+        마지막은 시제품 제작에 필요한 협력 업체를 추천해드리는 시간입니다.
+        앞서 정리한 요구사항과 디자인 방향을 기준으로 3곳을 제안합니다.
+      </div>
+
+      <div className="flex flex-wrap gap-5">
+        {companies.map((company) => (
+          <div
+            key={company.name}
+            className="w-[240px] overflow-hidden rounded-2xl border border-gray-300 bg-white shadow-sm"
+          >
+            <div className="flex h-36 items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
+              <div className="flex h-20 w-44 items-center justify-center rounded-2xl bg-white/80 text-sm font-semibold text-slate-300">
+                thumbnail
+              </div>
+            </div>
+            <div className="bg-gray-200 p-3">
+              <div className="flex flex-col gap-1.5">
+                <div className="text-base font-semibold leading-6 text-neutral-900">
+                  {company.name}
+                </div>
+                <div className="line-clamp-1 text-xs font-medium leading-4 text-slate-500">
+                  {company.summary}
+                </div>
+                <div className="line-clamp-1 text-xs font-medium leading-4 text-slate-400">
+                  {company.highlight}
+                </div>
+                <div className="text-xs font-medium leading-4 text-blue-500 underline">
+                  {company.website}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        className="inline-flex w-fit items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-200"
+      >
+        업체 더 보기
+        <span className="text-blue-500">›</span>
+      </button>
     </div>
   )
 }
@@ -994,6 +1094,7 @@ export default function ChatPage({
           rfpJson: latestRfpJson,
           rfpContent: latestRfpContent,
           projectTitle,
+          layout: 'one-page',
         }),
       })
 
@@ -1167,6 +1268,18 @@ export default function ChatPage({
     }
   }
 
+  const getIntentStageKey = (text: string, fallbackStageKey: StageKey) => {
+    if (/협력\s*업체|업체\s*연결|업체\s*추천|파트너|vendor|company/i.test(text)) {
+      return 'step_6_company'
+    }
+
+    if (/rfp|제안요청서|제안\s*요청서|문서\s*생성|pdf/i.test(text)) {
+      return 'step_6_rfp'
+    }
+
+    return fallbackStageKey
+  }
+
   const onFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!input.trim() || isLoading) {
@@ -1179,10 +1292,11 @@ export default function ChatPage({
       content: input,
       active_agent: activeExpert,
       created_at: new Date().toISOString(),
-      stage_key: currentStageKey,
+      stage_key: getIntentStageKey(input, currentStageKey),
     }
 
     const nextMessages = [...messages, userMessage]
+    const stageKeyForRequest = getIntentStageKey(input, currentStageKey)
     setMessages(nextMessages)
     setInput('')
     setIsExpertPickerOpen(false)
@@ -1201,7 +1315,7 @@ export default function ChatPage({
       const isTemporaryExpertCall = activeExpert !== 'aidee'
       await streamAssistantResponse(
         nextMessages,
-        currentStageKey,
+        stageKeyForRequest,
         activeExpert,
         isTemporaryExpertCall
       )
@@ -1467,17 +1581,30 @@ export default function ChatPage({
                 </p>
               ) : null}
             </div>
-            {currentStageKey === 'step_6_rfp' ||
+              {currentStageKey === 'step_6_rfp' ||
+            currentStageKey === 'step_6_company' ||
             currentStageKey === 'step_5_rfp' ||
             latestRfpContent ? (
-              <button
-                type="button"
-                onClick={() => void handleRfpDownload()}
-                disabled={isDownloadingRfp || isLoading}
-                className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isDownloadingRfp ? 'RFP 생성 중...' : 'RFP 다운로드'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleRfpDownload()}
+                  disabled={isDownloadingRfp || isLoading}
+                  className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isDownloadingRfp ? 'RFP 생성 중...' : 'RFP 다운로드'}
+                </button>
+                {latestRfpContent ? (
+                  <button
+                    type="button"
+                    onClick={() => setInput('협력업체 연결을 진행해주세요.')}
+                    disabled={isLoading}
+                    className="rounded-full bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    협력업체 연결
+                  </button>
+                ) : null}
+              </div>
             ) : null}
           </div>
 
@@ -1761,6 +1888,13 @@ export default function ChatPage({
 
           {shouldShowCurrentStageDivider ? (
             <StageDivider stageKey={currentStageKey} />
+          ) : null}
+
+          {currentStageKey === 'step_6_company' && latestRfpContent ? (
+            <CompanyRecommendationsPanel
+              rfpJson={latestRfpJson}
+              rfpContent={latestRfpContent}
+            />
           ) : null}
 
           {isLoading && activeExpert === 'aidee' ? (

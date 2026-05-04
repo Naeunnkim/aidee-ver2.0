@@ -4,12 +4,17 @@ import { generateObject, type ModelMessage } from 'ai'
 import { google } from '@ai-sdk/google'
 import { renderToBuffer, type DocumentProps } from '@react-pdf/renderer'
 
-import { RawRfpPdfDocument, RfpPdfDocument } from '@/lib/rfp-pdf'
+import {
+  OnePageRfpPdfDocument,
+  RawRfpPdfDocument,
+  RfpPdfDocument,
+} from '@/lib/rfp-pdf'
 import {
   RFP_DOCUMENT_SCHEMA,
   type RfpDocument,
   buildRfpObjectPrompt,
 } from '@/lib/rfp'
+import { extractGeneratedImagesBlock } from '@/lib/image-generation'
 import { createClient } from '@/lib/supabase/server'
 
 export const runtime = 'nodejs'
@@ -36,6 +41,7 @@ type RequestBody = {
   rfpJson?: RfpDocument | null
   rfpContent?: string
   projectTitle?: string
+  layout?: 'one-page' | 'full'
 }
 
 function buildRequirementsText(project: ProjectRecord | null) {
@@ -87,6 +93,38 @@ function buildConversationText(messages: ModelMessage[]) {
 
 function sanitizeFilename(value: string) {
   return value.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'aidee-rfp'
+}
+
+function getSelectedReferenceImage(messages: MessageRecord[]) {
+  const latestSelectionIndex = [...messages]
+    .reverse()
+    .map((message) => {
+      if (message.role !== 'user') {
+        return null
+      }
+
+      const match = message.content.match(/스타일\s*레퍼런스\s*([1-4])번/)
+      return match ? Number(match[1]) - 1 : null
+    })
+    .find((index): index is number => typeof index === 'number')
+
+  const latestImageBlock = [...messages]
+    .reverse()
+    .map((message) => extractGeneratedImagesBlock(message.content).imageBlock)
+    .find((imageBlock) => imageBlock?.images.length)
+
+  if (!latestImageBlock?.images.length) {
+    return null
+  }
+
+  if (
+    typeof latestSelectionIndex === 'number' &&
+    latestImageBlock.images[latestSelectionIndex]
+  ) {
+    return latestImageBlock.images[latestSelectionIndex]
+  }
+
+  return latestImageBlock.images[0]
 }
 
 async function generateRfpJson({
@@ -193,13 +231,14 @@ export async function POST(request: Request) {
       messageCount: messages.length,
     })
 
+    const shouldUseOnePageLayout = body?.layout !== 'full'
     const hasInlineRfpContent =
       typeof body?.rfpContent === 'string' && body.rfpContent.trim().length > 0
 
     let pdfDocument: ReactElement<DocumentProps>
     let filenameBase: string
 
-    if (hasInlineRfpContent) {
+    if (hasInlineRfpContent && !shouldUseOnePageLayout) {
       const safeTitle =
         (typeof body?.projectTitle === 'string' && body.projectTitle.trim()) ||
         project?.title ||
@@ -227,9 +266,16 @@ export async function POST(request: Request) {
         projectName: rfpJson.projectName,
       })
 
-      pdfDocument = createElement(RfpPdfDocument, {
-        rfp: rfpJson,
-      }) as ReactElement<DocumentProps>
+      if (shouldUseOnePageLayout) {
+        pdfDocument = createElement(OnePageRfpPdfDocument, {
+          rfp: rfpJson,
+          selectedReferenceImage: getSelectedReferenceImage(messages),
+        }) as ReactElement<DocumentProps>
+      } else {
+        pdfDocument = createElement(RfpPdfDocument, {
+          rfp: rfpJson,
+        }) as ReactElement<DocumentProps>
+      }
 
       filenameBase = sanitizeFilename(rfpJson.projectName)
     }

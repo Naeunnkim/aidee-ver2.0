@@ -25,6 +25,7 @@ import { createClient } from '@/lib/supabase/client'
 import {
   SIDEBAR_STEPS,
   STAGE_DEFINITIONS,
+  getNextStageKey,
   getSidebarStepIndex,
   isKnownStageKey,
   type StageKey,
@@ -532,6 +533,60 @@ function CompanyRecommendationsPanel({
       >
         업체 더 보기
         <span className="text-blue-500">›</span>
+      </button>
+    </div>
+  )
+}
+
+function StageAdvanceButton({
+  label,
+  onClick,
+  disabled,
+}: {
+  label: string
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-medium text-blue-600 shadow-sm outline outline-1 outline-gray-200 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {label}
+    </button>
+  )
+}
+
+function RfpActionPanel({
+  isDownloadingRfp,
+  isLoading,
+  onDownload,
+  onCompanyConnect,
+}: {
+  isDownloadingRfp: boolean
+  isLoading: boolean
+  onDownload: () => void
+  onCompanyConnect: () => void
+}) {
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        onClick={onDownload}
+        disabled={isDownloadingRfp || isLoading}
+        className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {isDownloadingRfp ? 'RFP 생성 중...' : 'RFP 다운로드'}
+      </button>
+      <button
+        type="button"
+        onClick={onCompanyConnect}
+        disabled={isLoading}
+        className="rounded-full bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        협력업체 연결
       </button>
     </div>
   )
@@ -1268,6 +1323,45 @@ export default function ChatPage({
     }
   }
 
+  const requestNextStage = async () => {
+    if (isLoading) {
+      return
+    }
+
+    const nextStageKey = getNextStageKey(currentStageKey)
+    if (!nextStageKey) {
+      return
+    }
+
+    const userMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: '다음 단계로 진행해줘.',
+      active_agent: 'aidee',
+      created_at: new Date().toISOString(),
+      stage_key: nextStageKey,
+    }
+
+    const nextMessages = [...messages, userMessage]
+
+    setMessages(nextMessages)
+    setIsLoading(true)
+
+    try {
+      await insertMessage({
+        role: 'user',
+        content: userMessage.content,
+        activeAgent: 'aidee',
+      })
+
+      await streamAssistantResponse(nextMessages, nextStageKey, 'aidee')
+    } catch (error) {
+      console.error(error)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   const getIntentStageKey = (text: string, fallbackStageKey: StageKey) => {
     if (/협력\s*업체|업체\s*연결|업체\s*추천|파트너|vendor|company/i.test(text)) {
       return 'step_6_company'
@@ -1581,31 +1675,6 @@ export default function ChatPage({
                 </p>
               ) : null}
             </div>
-              {currentStageKey === 'step_6_rfp' ||
-            currentStageKey === 'step_6_company' ||
-            currentStageKey === 'step_5_rfp' ||
-            latestRfpContent ? (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleRfpDownload()}
-                  disabled={isDownloadingRfp || isLoading}
-                  className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isDownloadingRfp ? 'RFP 생성 중...' : 'RFP 다운로드'}
-                </button>
-                {latestRfpContent ? (
-                  <button
-                    type="button"
-                    onClick={() => setInput('협력업체 연결을 진행해주세요.')}
-                    disabled={isLoading}
-                    className="rounded-full bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    협력업체 연결
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
           </div>
 
           {messages.length === 0 && !isLoading ? (
@@ -1640,6 +1709,18 @@ export default function ChatPage({
                 (m.content.includes('User') &&
                   m.content.includes('Problem') &&
                   m.content.includes('Decision')))
+
+            const isRfpMessage =
+              m.role === 'assistant' &&
+              (m.content.includes('# 제품 제안요청서') ||
+                m.content.includes('## 1. 프로젝트 개요'))
+            const canShowAdvanceButton =
+              m.role === 'assistant' &&
+              m.id === latestAideeAssistantId &&
+              ['step_2_research', 'step_3_direction', 'step_5_design'].includes(
+                currentStageKey
+              ) &&
+              Boolean(getNextStageKey(currentStageKey))
 
             if (isPersonaCard) {
               const personaData = parsePersonaData(m.content)
@@ -1783,6 +1864,25 @@ export default function ChatPage({
                         </div>
                       ))}
                     </div>
+                  </div>
+                ) : null}
+                {isRfpMessage ? (
+                  <RfpActionPanel
+                    isDownloadingRfp={isDownloadingRfp}
+                    isLoading={isLoading}
+                    onDownload={() => void handleRfpDownload()}
+                    onCompanyConnect={() =>
+                      setInput('협력업체 연결을 진행해주세요.')
+                    }
+                  />
+                ) : null}
+                {canShowAdvanceButton ? (
+                  <div className="mt-3 flex items-center gap-2">
+                    <StageAdvanceButton
+                      label="다음 단계로 넘어갈까요?"
+                      onClick={() => void requestNextStage()}
+                      disabled={isLoading}
+                    />
                   </div>
                 ) : null}
                 {m.role === 'assistant' &&

@@ -95,6 +95,11 @@ function sanitizeFilename(value: string) {
   return value.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'aidee-rfp'
 }
 
+function getAsciiDownloadFilename(baseName: string) {
+  const normalized = baseName.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-+/g, '-')
+  return (normalized.trim().replace(/^-+|-+$/g, '') || 'aidee-rfp') + '.pdf'
+}
+
 function getSelectedReferenceImage(messages: MessageRecord[]) {
   const latestSelectionIndex = [...messages]
     .reverse()
@@ -285,12 +290,13 @@ export async function POST(request: Request) {
       bytes: pdfBuffer.byteLength,
     })
     const encodedFilename = encodeURIComponent(`${filenameBase}.pdf`)
+    const asciiFilename = getAsciiDownloadFilename(filenameBase)
 
     return new Response(new Uint8Array(pdfBuffer), {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="${filenameBase}.pdf"; filename*=UTF-8''${encodedFilename}`,
+        'Content-Disposition': `attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodedFilename}`,
       },
     })
   } catch (error) {

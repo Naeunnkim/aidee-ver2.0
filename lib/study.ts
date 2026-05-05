@@ -88,6 +88,19 @@ export const SIDEBAR_STEPS = [
   '평가 및 RFP 문서 생성',
 ]
 
+const NEXT_STAGE_KEY_MAP: Record<StageKey, StageKey | null> = {
+  step_1_idea: 'step_2_persona',
+  step_2_persona: 'step_2_research',
+  step_2_research: 'step_3_direction',
+  step_3_direction: 'step_4_style',
+  step_4_style: 'step_5_design',
+  step_5_design: 'step_6_rfp',
+  step_6_rfp: 'step_6_company',
+  step_6_company: null,
+  step_4_definition: 'step_4_style',
+  step_5_rfp: 'step_6_company',
+}
+
 export function getSidebarStepIndex(stageKey: string | null | undefined) {
   return (
     STAGE_DEFINITIONS.find((stage) => stage.key === stageKey)?.sidebarIndex ?? 0
@@ -96,4 +109,8 @@ export function getSidebarStepIndex(stageKey: string | null | undefined) {
 
 export function isKnownStageKey(value: string): value is StageKey {
   return STAGE_DEFINITIONS.some((stage) => stage.key === value)
+}
+
+export function getNextStageKey(stageKey: StageKey) {
+  return NEXT_STAGE_KEY_MAP[stageKey] ?? null
 }

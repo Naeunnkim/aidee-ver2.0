@@ -102,6 +102,10 @@ function isImageGenerationRequest(text: string) {
   ].some((keyword) => normalized.includes(keyword))
 }
 
+function canGenerateImagesInStage(stageKey: StageKey) {
+  return stageKey === 'step_4_style' || stageKey === 'step_5_design'
+}
+
 function extractRequestedImageCount(text: string) {
   const digitMatch = text.match(/([1-4])\s*장/)
   if (digitMatch) {
@@ -847,6 +851,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
     const isStyleReferenceSelectionTurn =
       currentStageKey === 'step_4_style' &&
       hasStyleReferenceSelection(lastUserMessage)
+    const canGenerateImages = canGenerateImagesInStage(currentStageKey)
 
     const result = await generateText({
       model: google('gemini-2.5-flash'),
@@ -864,45 +869,51 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
       stopWhen: ({ steps }) =>
         steps.length >= 1 &&
         steps[steps.length - 1].toolCalls.length === 0,
-      tools: isStyleReferenceSelectionTurn
-        ? undefined
-        : {
-            generate_design_image: tool({
-              description:
-                'Generate product concept or final design images with Gemini Nano Banana and return data URL images.',
-              inputSchema: z.object({
-                prompt: z
-                  .string()
-                  .min(1)
-                  .describe('Detailed image generation prompt for the desired visual'),
-                count: z
-                  .number()
-                  .int()
-                  .min(1)
-                  .max(4)
-                  .default(1)
-                  .describe('Number of image variations to create'),
-                model: z
-                  .enum(['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview'])
-                  .default('gemini-3.1-flash-image-preview')
-                  .describe('Nano Banana model to use'),
-              }),
-              execute: async ({ prompt, count, model }) => {
-                generatedImagePayload = await generateNanoBananaImages({
-                  prompt,
-                  count,
-                  model,
-                })
+      tools:
+        isStyleReferenceSelectionTurn || !canGenerateImages
+          ? undefined
+          : {
+              generate_design_image: tool({
+                description:
+                  'Generate product concept or final design images with Gemini Nano Banana and return data URL images.',
+                inputSchema: z.object({
+                  prompt: z
+                    .string()
+                    .min(1)
+                    .describe(
+                      'Detailed image generation prompt for the desired visual'
+                    ),
+                  count: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .max(4)
+                    .default(1)
+                    .describe('Number of image variations to create'),
+                  model: z
+                    .enum([
+                      'gemini-2.5-flash-image',
+                      'gemini-3.1-flash-image-preview',
+                    ])
+                    .default('gemini-3.1-flash-image-preview')
+                    .describe('Nano Banana model to use'),
+                }),
+                execute: async ({ prompt, count, model }) => {
+                  generatedImagePayload = await generateNanoBananaImages({
+                    prompt,
+                    count,
+                    model,
+                  })
 
-                return {
-                  status: 'success',
-                  message: `${generatedImagePayload.images.length} image variation(s) generated successfully.`,
-                  count: generatedImagePayload.images.length,
-                  model: generatedImagePayload.model,
-                }
-              },
-            }),
-          },
+                  return {
+                    status: 'success',
+                    message: `${generatedImagePayload.images.length} image variation(s) generated successfully.`,
+                    count: generatedImagePayload.images.length,
+                    model: generatedImagePayload.model,
+                  }
+                },
+              }),
+            },
     })
 
     const { cleanedText, stageMeta: parsedStageMeta } = parseStageMeta(
@@ -923,7 +934,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
 
     if (
       !generatedImagePayload &&
-      currentStageKey !== 'step_4_style' &&
+      canGenerateImages &&
       isImageGenerationRequest(lastUserMessage)
     ) {
       try {
@@ -949,8 +960,11 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
 
     if (
       !generatedImagePayload &&
-      (currentStageKey === 'step_4_style' ||
-        stageMeta.nextStageKey === 'step_4_style') &&
+      ((canGenerateImages &&
+        (currentStageKey === 'step_4_style' ||
+          stageMeta.nextStageKey === 'step_4_style')) ||
+        (currentStageKey === 'step_5_design' &&
+          stageMeta.nextStageKey === 'step_5_design')) &&
       !hasStyleReferenceSelection(lastUserMessage)
     ) {
       try {

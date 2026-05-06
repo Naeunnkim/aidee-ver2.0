@@ -20,7 +20,7 @@ import {
   type RfpDocument,
   buildRfpObjectPrompt,
 } from '@/lib/rfp'
-import { type StageKey, isKnownStageKey } from '@/lib/study'
+import { type StageKey, getNextStageKey, isKnownStageKey } from '@/lib/study'
 
 export const maxDuration = 60
 
@@ -578,21 +578,6 @@ ${projectContext}
 ${stageInstruction}
 
 ${expertInstruction ? `[전문가 전용 지시]\n${expertInstruction}` : ''}
-
-[단계 메타 출력 규칙]
-- 사용자에게 보여줄 실제 답변을 모두 작성한 뒤, 마지막 줄 아래에 반드시 아래 형식의 메타 블록을 추가하세요.
-- 메타 블록은 사용자에게 보여주기 위한 내용이 아니며, 형식을 절대 바꾸지 마세요.
-- current_stage와 next_stage는 다음 중 하나만 사용하세요:
-  step_1_idea, step_2_persona, step_2_research, step_3_direction, step_4_style, step_5_design, step_6_rfp, step_6_company, step_4_definition, step_5_rfp
-- transition은 yes 또는 no만 사용하세요.
-- reason은 짧은 영어 snake_case로 작성하세요.
-
-<<AIDEE_STAGE>>
-current_stage=${currentStageKey}
-next_stage=${currentStageKey}
-transition=no
-reason=stay
-<</AIDEE_STAGE>>
 `.trim()
 }
 
@@ -610,13 +595,17 @@ function sanitizeAssistantText(text: string) {
     /도구를\s*(호출|사용)/i,
     /함수를\s*호출/i,
     /Nano Banana\s*(API|api)\s*(호출|요청)/i,
+    /<<AIDEE_STAGE>>[\s\S]*?<<\/AIDEE_STAGE>>/i,
   ]
 
   const lines = text
     .split('\n')
     .filter((line) => !blockedPatterns.some((pattern) => pattern.test(line)))
 
-  return lines.join('\n').trim()
+  return lines
+    .join('\n')
+    .replace(/<<AIDEE_STAGE>>[\s\S]*?<<\/AIDEE_STAGE>>/gi, '')
+    .trim()
 }
 
 function formatRfpMarkdown(rfp: RfpDocument) {
@@ -708,6 +697,46 @@ function parseStageMeta(text: string, fallbackStageKey: StageKey) {
         rawTransition.trim() === 'yes' && currentStageKey !== nextStageKey,
       reason: rawReason.trim() || 'unspecified',
     } satisfies StageMeta,
+  }
+}
+
+function inferStageTransitionFromText({
+  currentStageKey,
+  text,
+}: {
+  currentStageKey: StageKey
+  text: string
+}): StageMeta | null {
+  const transitionHints = [
+    /다음 단계 진행은 UI 버튼/i,
+    /다음 단계로 넘어가기/i,
+    /다음 단계로 진행/i,
+    /다음 단계로 이어/i,
+    /이 단계는 여기까지/i,
+    /단계가 완료/i,
+  ]
+
+  const hasTransitionHint = transitionHints.some((pattern) => pattern.test(text))
+
+  if (!hasTransitionHint) {
+    return null
+  }
+
+  const nextStageKey = getNextStageKey(currentStageKey)
+  if (
+    !nextStageKey ||
+    !['step_2_research', 'step_3_direction', 'step_5_design'].includes(
+      currentStageKey
+    )
+  ) {
+    return null
+  }
+
+  return {
+    currentStageKey,
+    nextStageKey,
+    transition: true,
+    reason: 'stage_complete',
   }
 }
 
@@ -920,7 +949,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
       result.text,
       currentStageKey
     )
-    const stageMeta = expertCall
+    let stageMeta = expertCall
       ? {
           ...parsedStageMeta,
           currentStageKey,
@@ -929,6 +958,34 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
           reason: 'expert_call',
         }
       : parsedStageMeta
+
+    if (!expertCall) {
+      if (currentStageKey === 'step_4_definition') {
+        stageMeta = {
+          currentStageKey,
+          nextStageKey: 'step_4_style',
+          transition: true,
+          reason: 'legacy_step_map',
+        }
+      } else if (currentStageKey === 'step_5_rfp') {
+        stageMeta = {
+          currentStageKey,
+          nextStageKey: 'step_6_company',
+          transition: true,
+          reason: 'legacy_step_map',
+        }
+      } else if (
+        currentStageKey === 'step_4_style' &&
+        hasStyleReferenceSelection(lastUserMessage)
+      ) {
+        stageMeta = {
+          currentStageKey,
+          nextStageKey: 'step_5_design',
+          transition: true,
+          reason: 'style_reference_selected',
+        }
+      }
+    }
 
     let finalText = sanitizeAssistantText(cleanedText)
 
@@ -1027,6 +1084,15 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
       } catch (error) {
         console.error('RFP JSON generation failed:', error)
       }
+    }
+
+    const inferredStageMeta = inferStageTransitionFromText({
+      currentStageKey: stageMeta.currentStageKey,
+      text: finalText,
+    })
+
+    if (inferredStageMeta) {
+      stageMeta = inferredStageMeta
     }
 
     return new Response(finalText, {

@@ -1,9 +1,10 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import ProjectModal from '@/components/dashboard/project-modal'
+import ProjectSettingsModal from '@/components/dashboard/project-settings-modal'
 import { extractGeneratedImagesBlock } from '@/lib/image-generation'
 import { saveGeneratedProjectThumbnail } from '@/lib/project-thumbnail'
 import { createClient } from '@/lib/supabase/client'
@@ -58,6 +59,38 @@ export function ProjectList({ user }: ProjectListProps) {
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null)
+
+  const loadProjects = useCallback(async () => {
+    const supabase = createClient()
+    const {
+      data: { user: authUser },
+    } = await supabase.auth.getUser()
+
+    if (!authUser) {
+      setProjects([])
+      setLoading(false)
+      return
+    }
+
+    const { data, error } = await supabase
+      .from('projects')
+      .select('id, title, created_at, requirements')
+      .eq('user_id', authUser.id)
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      setProjects([])
+      setLoading(false)
+      return
+    }
+
+    const nextProjects = (data ?? []) as Project[]
+    setProjects(nextProjects)
+    setLoading(false)
+
+    return nextProjects
+  }, [])
 
   useEffect(() => {
     let isMounted = true
@@ -124,55 +157,22 @@ export function ProjectList({ user }: ProjectListProps) {
       }
     }
 
-    async function fetchProjects() {
-      const supabase = createClient()
-      const {
-        data: { user: authUser },
-      } = await supabase.auth.getUser()
-
-      if (!authUser) {
-        if (isMounted) {
-          setProjects([])
-          setLoading(false)
-        }
-
+    void loadProjects().then((nextProjects) => {
+      if (!isMounted || !nextProjects) {
         return
       }
 
-      const { data, error } = await supabase
-        .from('projects')
-        .select('id, title, created_at, requirements')
-        .eq('user_id', authUser.id)
-        .order('created_at', { ascending: false })
-
-      if (error) {
-        // The new project currently has no `projects` table.
-        if (isMounted) {
-          setProjects([])
-          setLoading(false)
-        }
-
-        return
-      }
-
-      if (isMounted) {
-        const nextProjects = (data ?? []) as Project[]
-        setProjects(nextProjects)
-        setLoading(false)
-        nextProjects
-          .filter((project) => !getProjectThumbnail(project))
-          .forEach((project) => {
-            void backfillProjectThumbnail(project)
-          })
-      }
-    }
-
-    fetchProjects()
+      nextProjects
+        .filter((project) => !getProjectThumbnail(project))
+        .forEach((project) => {
+          void backfillProjectThumbnail(project)
+        })
+    })
 
     return () => {
       isMounted = false
     }
-  }, [])
+  }, [loadProjects])
 
   const filteredProjects = projects.filter((project) =>
     project.title.toLowerCase().includes(searchTerm.toLowerCase())
@@ -255,38 +255,80 @@ export function ProjectList({ user }: ProjectListProps) {
           ) : filteredProjects.length > 0 ? (
             <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
               {filteredProjects.map((project) => (
-                <Link
+                <div
                   key={project.id}
-                  href={`/project/${project.id}`}
-                  className="group flex h-64 flex-col overflow-hidden rounded-[24px] border border-gray-100 bg-white shadow-sm transition-all hover:shadow-md"
+                  className="group relative flex h-64 flex-col overflow-hidden rounded-[24px] border border-gray-100 bg-white shadow-sm transition-all hover:shadow-md"
                 >
-                  <div className="relative flex h-[140px] items-center justify-center overflow-hidden bg-slate-50">
-                    {getProjectThumbnail(project) ? (
-                      <img
-                        src={getProjectThumbnail(project) ?? ''}
-                        alt={`${project.title} 썸네일`}
-                        className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
-                      />
-                    ) : (
-                      <div className="h-full w-full bg-gradient-to-br from-gray-100 to-gray-200" />
-                    )}
+                  <div className="absolute right-3 top-3 z-10 flex gap-2 opacity-100 transition md:opacity-0 md:group-hover:opacity-100">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedProject(project)}
+                      className="rounded-full bg-white/95 px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-sm outline outline-1 outline-gray-200 transition hover:bg-blue-50 hover:text-blue-700"
+                    >
+                      수정
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const confirmed = window.confirm(
+                          '이 프로젝트를 삭제할까요? 관련 데이터가 모두 삭제됩니다.'
+                        )
+
+                        if (!confirmed) {
+                          return
+                        }
+
+                        const response = await fetch(`/api/projects/${project.id}`, {
+                          method: 'DELETE',
+                        })
+
+                        if (!response.ok) {
+                          const result = (await response.json().catch(() => null)) as
+                            | { error?: string }
+                            | null
+                          alert(result?.error || '프로젝트 삭제에 실패했습니다.')
+                          return
+                        }
+
+                        setProjects((prev) =>
+                          prev.filter((item) => item.id !== project.id)
+                        )
+                      }}
+                      className="rounded-full bg-white/95 px-3 py-1.5 text-xs font-semibold text-red-600 shadow-sm outline outline-1 outline-red-100 transition hover:bg-red-50"
+                    >
+                      삭제
+                    </button>
                   </div>
 
-                  <div className="flex flex-col gap-2 p-5">
-                    <h3 className="truncate text-[15px] leading-tight font-bold text-neutral-900">
-                      {project.title}
-                    </h3>
-
-                    <div className="flex items-center gap-2">
-                      <span className="rounded-full border border-amber-100 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-500">
-                        기획 단계
-                      </span>
-                      <span className="text-[10px] font-normal text-zinc-400">
-                        {formatProjectDate(project.created_at)}
-                      </span>
+                  <Link href={`/project/${project.id}`} className="flex h-full flex-col">
+                    <div className="relative flex h-[140px] items-center justify-center overflow-hidden bg-slate-50">
+                      {getProjectThumbnail(project) ? (
+                        <img
+                          src={getProjectThumbnail(project) ?? ''}
+                          alt={`${project.title} 썸네일`}
+                          className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                        />
+                      ) : (
+                        <div className="h-full w-full bg-gradient-to-br from-gray-100 to-gray-200" />
+                      )}
                     </div>
-                  </div>
-                </Link>
+
+                    <div className="flex flex-col gap-2 p-5">
+                      <h3 className="truncate text-[15px] leading-tight font-bold text-neutral-900">
+                        {project.title}
+                      </h3>
+
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full border border-amber-100 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-500">
+                          기획 단계
+                        </span>
+                        <span className="text-[10px] font-normal text-zinc-400">
+                          {formatProjectDate(project.created_at)}
+                        </span>
+                      </div>
+                    </div>
+                  </Link>
+                </div>
               ))}
             </div>
           ) : (
@@ -314,6 +356,27 @@ export function ProjectList({ user }: ProjectListProps) {
           </div>
         </div>
       </main>
+
+      {selectedProject ? (
+        <ProjectSettingsModal
+          project={selectedProject}
+          onClose={() => setSelectedProject(null)}
+          onUpdated={(updatedProject) => {
+            setProjects((prev) =>
+              prev.map((project) =>
+                project.id === updatedProject.id
+                  ? { ...project, title: updatedProject.title }
+                  : project
+              )
+            )
+          }}
+          onDeleted={(deletedProjectId) => {
+            setProjects((prev) =>
+              prev.filter((project) => project.id !== deletedProjectId)
+            )
+          }}
+        />
+      ) : null}
 
       {isModalOpen ? <ProjectModal onClose={() => setIsModalOpen(false)} /> : null}
     </div>

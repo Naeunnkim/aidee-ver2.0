@@ -100,18 +100,17 @@ function parsePersonaData(content: string) {
   )
   const imageUrl = imageUrlMatch ? imageUrlMatch[0] : ''
 
-  const sectionPatterns = [
-    '1\\.\\s*User',
-    'User',
-    '2\\.\\s*Behavior\\s*Map',
-    'Behavior\\s*Map',
-    '3\\.\\s*Correlation\\s*Analysis',
-    'Correlation\\s*Analysis',
-    '4\\.\\s*Problem',
-    'Problem',
-    'Success',
-    '5\\.\\s*Decision',
-    'Decision',
+  const sectionGroups = [
+    ['A\\.\\s*User', '1\\.\\s*User', 'User'],
+    ['B\\.\\s*Behavior\\s*Map', '2\\.\\s*Behavior\\s*Map', 'Behavior\\s*Map'],
+    [
+      'C\\.\\s*Correlation\\s*Analysis',
+      '3\\.\\s*Correlation\\s*Analysis',
+      'Correlation\\s*Analysis',
+    ],
+    ['D\\.\\s*Problem', '4\\.\\s*Problem', 'Problem'],
+    ['Success'],
+    ['F\\.\\s*Decision', '5\\.\\s*Decision', 'Decision'],
   ]
 
   const cleanLine = (line: string) =>
@@ -219,23 +218,27 @@ function parsePersonaData(content: string) {
     return merged
   }
 
-  const extractSection = (titlePattern: string) => {
-    const nextTitles = sectionPatterns
-      .filter((item) => item !== titlePattern)
+  const extractSection = (titlePatterns: string[]) => {
+    const nextTitles = sectionGroups
+      .flat()
+      .filter((item) => !titlePatterns.includes(item))
       .join('|')
-    const regex = new RegExp(
-      `(?:^|\\n)\\s*(?:##+\\s*)?(?:\\*\\*\\s*)?${titlePattern}(?:\\s*\\*\\*)?\\s*\\n([\\s\\S]*?)(?=\\n\\s*(?:##+\\s*)?(?:\\*\\*\\s*)?(?:${nextTitles})(?:\\s*\\*\\*)?\\s*\\n|$)`,
-      'i'
-    )
-    const match = normalizedContent.match(regex)
-    if (!match) {
-      return []
+
+    for (const titlePattern of titlePatterns) {
+      const regex = new RegExp(
+        `(?:^|\\n)\\s*(?:##+\\s*)?(?:\\*\\*\\s*)?${titlePattern}(?:\\s*\\*\\*)?\\s*\\n([\\s\\S]*?)(?=\\n\\s*(?:##+\\s*)?(?:\\*\\*\\s*)?(?:${nextTitles})(?:\\s*\\*\\*)?\\s*\\n|$)`,
+        'i'
+      )
+      const match = normalizedContent.match(regex)
+      if (match) {
+        return normalizeLines(match[1])
+      }
     }
 
-    return normalizeLines(match[1])
+    return []
   }
 
-  const successLines = extractSection('Success')
+  const successLines = extractSection(['Success'])
   const genericSuccessLabels = new Set(['핵심가치', '기대효과', '기대효과2'])
   const successData = successLines
     .map((line, index, lines) => {
@@ -277,23 +280,23 @@ function parsePersonaData(content: string) {
         Boolean(item?.tag || item?.desc)
     )
 
-  const userLines = extractSection('1\\.\\s*User').length
-    ? extractSection('1\\.\\s*User')
-    : extractSection('User')
-  const behaviorMapLines = extractSection('2\\.\\s*Behavior\\s*Map').length
-    ? extractSection('2\\.\\s*Behavior\\s*Map')
-    : extractSection('Behavior\\s*Map')
-  const correlationAnalysisLines = extractSection(
-    '3\\.\\s*Correlation\\s*Analysis'
-  ).length
-    ? extractSection('3\\.\\s*Correlation\\s*Analysis')
-    : extractSection('Correlation\\s*Analysis')
-  const problemLines = extractSection('4\\.\\s*Problem').length
-    ? extractSection('4\\.\\s*Problem')
-    : extractSection('Problem')
-  const decisionLines = extractSection('5\\.\\s*Decision').length
-    ? extractSection('5\\.\\s*Decision')
-    : extractSection('Decision')
+  const userLines = extractSection(['A\\.\\s*User', '1\\.\\s*User', 'User'])
+  const behaviorMapLines = extractSection([
+    'B\\.\\s*Behavior\\s*Map',
+    '2\\.\\s*Behavior\\s*Map',
+    'Behavior\\s*Map',
+  ])
+  const correlationAnalysisLines = extractSection([
+    'C\\.\\s*Correlation\\s*Analysis',
+    '3\\.\\s*Correlation\\s*Analysis',
+    'Correlation\\s*Analysis',
+  ])
+  const problemLines = extractSection(['D\\.\\s*Problem', '4\\.\\s*Problem', 'Problem'])
+  const decisionLines = extractSection([
+    'F\\.\\s*Decision',
+    '5\\.\\s*Decision',
+    'Decision',
+  ])
 
   const parsed = {
     user: filterTemplateGuideLines(userLines),
@@ -1165,10 +1168,9 @@ export default function ChatPage({
   }, [messages, isLoading])
 
   useEffect(() => {
-    if (!hasManualSidebarFocus) {
-      setFocusedSidebarIndex(getSidebarStepIndex(currentStageKey))
-    }
-  }, [currentStageKey, hasManualSidebarFocus])
+    setFocusedSidebarIndex(getSidebarStepIndex(currentStageKey))
+    setHasManualSidebarFocus(false)
+  }, [currentStageKey])
 
   useEffect(() => {
     const latestRfpMessage = [...messages]
@@ -1858,33 +1860,33 @@ export default function ChatPage({
                     </div>
                   ) : null}
                   <div
-                    className={`max-w-[514px] rounded-[24px] p-5 text-base leading-relaxed font-medium shadow-sm ${
+                    className={`max-w-[514px] min-w-0 overflow-hidden rounded-[24px] p-5 text-base leading-relaxed font-medium shadow-sm ${
                       m.role === 'user'
                         ? 'rounded-tr-none bg-gray-100 text-neutral-900'
                         : 'rounded-tl-none bg-gray-200 text-neutral-900'
                     }`}
                   >
-                    <div className="prose prose-sm prose-p:my-0 prose-p:leading-7 prose-li:my-0 prose-headings:mb-3 prose-strong:text-neutral-900 max-w-none break-words whitespace-pre-wrap">
+                    <div className="prose prose-sm prose-p:my-0 prose-p:leading-7 prose-li:my-0 prose-headings:mb-3 prose-strong:text-neutral-900 max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere]">
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm, remarkBreaks]}
                         components={{
                           p: ({ children }) => (
-                            <p className="mb-1 leading-7 last:mb-0">
+                            <p className="mb-1 max-w-full break-words leading-7 last:mb-0">
                               {children}
                             </p>
                           ),
                           ul: ({ children }) => (
-                            <ul className="my-3 list-disc space-y-1 pl-5">
+                            <ul className="my-3 max-w-full list-disc space-y-1 pl-5">
                               {children}
                             </ul>
                           ),
                           ol: ({ children }) => (
-                            <ol className="my-3 list-decimal space-y-1 pl-5">
+                            <ol className="my-3 max-w-full list-decimal space-y-1 pl-5">
                               {children}
                             </ol>
                           ),
                           li: ({ children }) => (
-                            <li className="leading-5 [&>p]:mb-0 [&>p]:inline">
+                            <li className="max-w-full break-words leading-5 [&>p]:mb-0 [&>p]:inline">
                               {children}
                             </li>
                           ),
@@ -1988,7 +1990,7 @@ export default function ChatPage({
                       return (
                         <div
                           key={reply.id}
-                          className="ml-5 rounded-2xl bg-gray-100 p-3 text-sm font-medium leading-6 text-neutral-800"
+                          className="ml-5 min-w-0 max-w-[602px] overflow-hidden rounded-2xl bg-gray-100 p-3 text-sm font-medium leading-6 text-neutral-800"
                         >
                           <div className="mb-1.5 flex items-center gap-1.5">
                             <ExpertAvatar
@@ -2006,27 +2008,27 @@ export default function ChatPage({
                               <span>{definition.loadingLabel}</span>
                             </div>
                           ) : (
-                            <div className="prose prose-sm prose-p:my-0 prose-p:leading-6 prose-li:my-0 max-w-none break-words whitespace-pre-wrap">
+                            <div className="prose prose-sm prose-p:my-0 prose-p:leading-6 prose-li:my-0 max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere]">
                               <ReactMarkdown
                                 remarkPlugins={[remarkGfm, remarkBreaks]}
                                 components={{
                                   p: ({ children }) => (
-                                    <p className="mb-1 leading-6 last:mb-0">
+                                    <p className="mb-1 max-w-full break-words leading-6 last:mb-0">
                                       {children}
                                     </p>
                                   ),
                                   ul: ({ children }) => (
-                                    <ul className="my-2 list-disc space-y-1 pl-5">
+                                    <ul className="my-2 max-w-full list-disc space-y-1 pl-5">
                                       {children}
                                     </ul>
                                   ),
                                   ol: ({ children }) => (
-                                    <ol className="my-2 list-decimal space-y-1 pl-5">
+                                    <ol className="my-2 max-w-full list-decimal space-y-1 pl-5">
                                       {children}
                                     </ol>
                                   ),
                                   li: ({ children }) => (
-                                    <li className="leading-5 [&>p]:mb-0 [&>p]:inline">
+                                    <li className="max-w-full break-words leading-5 [&>p]:mb-0 [&>p]:inline">
                                       {children}
                                     </li>
                                   ),

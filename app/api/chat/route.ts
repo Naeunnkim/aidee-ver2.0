@@ -608,6 +608,113 @@ function sanitizeAssistantText(text: string) {
     .trim()
 }
 
+function normalizeChoiceFormatting(text: string) {
+  const protectedBlockPattern =
+    /^<<AIDEE_(?:RFP_JSON|IMAGES)>>[\s\S]*<<\/AIDEE_(?:RFP_JSON|IMAGES)>>$/
+
+  return text
+    .split(/(<<AIDEE_(?:RFP_JSON|IMAGES)>>[\s\S]*?<<\/AIDEE_(?:RFP_JSON|IMAGES)>>)/g)
+    .map((segment) => {
+      if (protectedBlockPattern.test(segment.trim())) {
+        return segment
+      }
+
+      const lines = segment.split('\n')
+      let inChoiceBlock = false
+      let choiceIndex = 0
+
+      const looksLikeChoicePrompt = (line: string) => {
+        const normalized = line.trim().toLowerCase()
+        return (
+          /\?$/.test(line.trim()) ||
+          /선택지|고르|골라|아래 중|다음 중|원하시|원하는|choose|pick/.test(
+            normalized
+          )
+        )
+      }
+
+      const convertIndexedChoice = (line: string) =>
+        line
+          .replace(/^\s*(?:1|①)[.)]\s+/, 'A. ')
+          .replace(/^\s*(?:2|②)[.)]\s+/, 'B. ')
+          .replace(/^\s*(?:3|③)[.)]\s+/, 'C. ')
+          .replace(/^\s*(?:A|a)[.)]\s+/, 'A. ')
+          .replace(/^\s*(?:B|b)[.)]\s+/, 'B. ')
+          .replace(/^\s*(?:C|c)[.)]\s+/, 'C. ')
+
+      const normalizedLines = lines.map((line, index) => {
+        const trimmed = line.trim()
+
+        if (!trimmed) {
+          inChoiceBlock = false
+          choiceIndex = 0
+          return line
+        }
+
+        if (trimmed.startsWith('<<AIDEE_')) {
+          inChoiceBlock = false
+          choiceIndex = 0
+          return line
+        }
+
+        if (trimmed.startsWith('#')) {
+          inChoiceBlock = false
+          choiceIndex = 0
+          return line
+        }
+
+        const previousNonEmptyLine = [...lines.slice(0, index)]
+          .reverse()
+          .find((candidate) => candidate.trim().length > 0)
+
+        if (looksLikeChoicePrompt(line)) {
+          inChoiceBlock = true
+          choiceIndex = 0
+          return line
+        }
+
+        if (
+          inChoiceBlock &&
+          /^[\-•*]\s+/.test(trimmed) &&
+          choiceIndex < 3
+        ) {
+          const mappedPrefix = ['A. ', 'B. ', 'C. '][choiceIndex]
+          choiceIndex += 1
+          return line.replace(/^\s*[\-•*]\s+/, mappedPrefix)
+        }
+
+        if (
+          inChoiceBlock &&
+          /^\s*(?:1|①|2|②|3|③)[.)]\s+/.test(trimmed)
+        ) {
+          inChoiceBlock = true
+          choiceIndex = Math.min(choiceIndex + 1, 3)
+          return convertIndexedChoice(line)
+        }
+
+        if (
+          previousNonEmptyLine &&
+          looksLikeChoicePrompt(previousNonEmptyLine) &&
+          /^[\-•*]\s+/.test(trimmed) &&
+          choiceIndex < 3
+        ) {
+          inChoiceBlock = true
+          const mappedPrefix = ['A. ', 'B. ', 'C. '][choiceIndex]
+          choiceIndex += 1
+          return line.replace(/^\s*[\-•*]\s+/, mappedPrefix)
+        }
+
+        inChoiceBlock = false
+        choiceIndex = 0
+        return convertIndexedChoice(line)
+      })
+
+      return normalizedLines.join('\n')
+    })
+    .join('')
+    .trim()
+}
+
 function formatRfpMarkdown(rfp: RfpDocument) {
   return [
     '# 제품 제안요청서',
@@ -987,7 +1094,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
       }
     }
 
-    let finalText = sanitizeAssistantText(cleanedText)
+    let finalText = normalizeChoiceFormatting(sanitizeAssistantText(cleanedText))
 
     if (
       !generatedImagePayload &&

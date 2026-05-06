@@ -215,16 +215,45 @@ export async function DELETE(
     )
   }
 
-  const { error: sessionsDeleteError } = await admin
-    .from('study_sessions')
-    .delete()
+  const { data: stageSessionRows, error: stageSessionError } = await admin
+    .from('design_stages')
+    .select('session_id')
     .eq('project_id', projectId)
 
-  if (sessionsDeleteError) {
+  if (stageSessionError) {
     return NextResponse.json(
-      { error: sessionsDeleteError.message || 'Failed to delete study sessions' },
+      {
+        error:
+          stageSessionError.message || 'Failed to fetch study session references',
+      },
       { status: 500 }
     )
+  }
+
+  const sessionIds = Array.from(
+    new Set(
+      (stageSessionRows ?? [])
+        .map((row) => row.session_id)
+        .filter((value): value is string => typeof value === 'string')
+        .filter((value) => value.length > 0)
+    )
+  )
+
+  if (sessionIds.length > 0) {
+    const { error: sessionsDeleteError } = await admin
+      .from('study_sessions')
+      .delete()
+      .in('id', sessionIds)
+
+    if (sessionsDeleteError) {
+      return NextResponse.json(
+        {
+          error:
+            sessionsDeleteError.message || 'Failed to delete study sessions',
+        },
+        { status: 500 }
+      )
+    }
   }
 
   try {

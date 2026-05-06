@@ -27,6 +27,7 @@ import {
   STAGE_DEFINITIONS,
   getNextStageKey,
   getSidebarStepIndex,
+  getStageKeysForSidebarIndex,
   isKnownStageKey,
   type StageKey,
 } from '@/lib/study'
@@ -424,7 +425,7 @@ function StageDivider({ stageKey }: { stageKey: StageKey }) {
     .join(', ')
 
   return (
-    <div className="flex items-center gap-2 py-1">
+    <div className="flex items-center gap-2 py-1" data-stage-divider={stageKey}>
       <div className="h-px flex-1 bg-gray-100" />
       <div className="inline-flex max-w-[78%] items-center gap-2 rounded-full bg-white px-3 py-1.5 shadow-sm outline outline-1 outline-gray-100">
         <div className="flex -space-x-1">
@@ -442,6 +443,37 @@ function StageDivider({ stageKey }: { stageKey: StageKey }) {
         </span>
       </div>
       <div className="h-px flex-1 bg-gray-100" />
+    </div>
+  )
+}
+
+function SidebarExpertRow({
+  expertKey,
+  selected,
+}: {
+  expertKey: ExpertKey
+  selected: boolean
+}) {
+  const definition = getExpertDefinition(expertKey)
+
+  return (
+    <div
+      className={`inline-flex w-full items-center gap-2 rounded-xl p-1.5 transition ${
+        selected ? 'bg-blue-50' : 'hover:bg-gray-50'
+      }`}
+    >
+      <ExpertAvatar
+        expertKey={expertKey}
+        selected={selected}
+        className="h-8 w-8"
+      />
+      <div
+        className={`text-sm font-medium leading-5 ${
+          selected ? 'text-neutral-900' : 'text-neutral-600'
+        }`}
+      >
+        {definition.label}
+      </div>
     </div>
   )
 }
@@ -618,6 +650,10 @@ export default function ChatPage({
     Record<string, number>
   >({})
   const [isExpertPickerOpen, setIsExpertPickerOpen] = useState(false)
+  const [pendingNextStageKey, setPendingNextStageKey] =
+    useState<StageKey | null>(null)
+  const [focusedSidebarIndex, setFocusedSidebarIndex] = useState(0)
+  const [hasManualSidebarFocus, setHasManualSidebarFocus] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -627,6 +663,28 @@ export default function ChatPage({
     (expert) => expert.key !== 'aidee'
   )
   const currentStageExperts = getStageExperts(currentStageKey)
+  const scrollToSidebarStep = useCallback((sidebarIndex: number) => {
+    setFocusedSidebarIndex(sidebarIndex)
+    setHasManualSidebarFocus(true)
+    const node = scrollRef.current
+    if (!node) {
+      return
+    }
+
+    const stageKeys = getStageKeysForSidebarIndex(sidebarIndex)
+    const targetElement = stageKeys
+      .map((stageKey) =>
+        node.querySelector<HTMLElement>(`[data-stage-divider="${stageKey}"]`)
+      )
+      .find((element): element is HTMLElement => Boolean(element))
+
+    if (targetElement) {
+      targetElement.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
+    }
+
+    node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' })
+  }, [])
   const currentStageExpertLabels = currentStageExperts
     .map((expert) => getExpertDefinition(expert).label)
     .join(', ')
@@ -845,6 +903,7 @@ export default function ChatPage({
 
       if (data.currentStageKey) {
         setCurrentStageKey(data.currentStageKey)
+        setPendingNextStageKey(null)
         await fetchStageTimeline()
       }
     },
@@ -872,7 +931,9 @@ export default function ChatPage({
         nextStageHeader &&
         isKnownStageKey(nextStageHeader)
       ) {
-        await transitionStage(nextStageHeader, reasonHeader)
+        if (nextStageHeader !== currentStageKey) {
+          setPendingNextStageKey(nextStageHeader)
+        }
         return
       }
 
@@ -1104,6 +1165,12 @@ export default function ChatPage({
   }, [messages, isLoading])
 
   useEffect(() => {
+    if (!hasManualSidebarFocus) {
+      setFocusedSidebarIndex(getSidebarStepIndex(currentStageKey))
+    }
+  }, [currentStageKey, hasManualSidebarFocus])
+
+  useEffect(() => {
     const latestRfpMessage = [...messages]
       .reverse()
       .find(
@@ -1328,7 +1395,7 @@ export default function ChatPage({
       return
     }
 
-    const nextStageKey = getNextStageKey(currentStageKey)
+    const nextStageKey = pendingNextStageKey ?? getNextStageKey(currentStageKey)
     if (!nextStageKey) {
       return
     }
@@ -1354,6 +1421,8 @@ export default function ChatPage({
         activeAgent: 'aidee',
       })
 
+      await transitionStage(nextStageKey, 'manual_advance')
+      setPendingNextStageKey(null)
       await streamAssistantResponse(nextMessages, nextStageKey, 'aidee')
     } catch (error) {
       console.error(error)
@@ -1575,8 +1644,7 @@ export default function ChatPage({
               <div className="inline-flex items-start gap-1.5">
                 <div className="inline-flex w-2.5 flex-col items-start">
                   {SIDEBAR_STEPS.map((_, index) => {
-                    const currentIndex = getSidebarStepIndex(currentStageKey)
-                    const isActive = index === currentIndex
+                    const isFocused = index === focusedSidebarIndex
                     const isLast = index === SIDEBAR_STEPS.length - 1
 
                     return (
@@ -1589,7 +1657,9 @@ export default function ChatPage({
                         ) : null}
                         <div
                           className={`h-2.5 w-2.5 rounded-full ${
-                            isActive ? 'border-2 border-blue-600 bg-white' : 'bg-gray-200'
+                            isFocused
+                              ? 'border-2 border-blue-600 bg-white'
+                              : 'bg-gray-200'
                           }`}
                         />
                         {!isLast ? (
@@ -1601,23 +1671,46 @@ export default function ChatPage({
                 </div>
                 <div className="inline-flex w-56 flex-col items-start">
                   {SIDEBAR_STEPS.map((step, index) => {
-                    const isActive = index === getSidebarStepIndex(currentStageKey)
+                    const isFocused = index === focusedSidebarIndex
                     return (
-                      <div
+                      <button
                         key={step}
-                        className="inline-flex self-stretch items-center gap-2 py-1.5"
+                        type="button"
+                        onClick={() => scrollToSidebarStep(index)}
+                        className={`inline-flex self-stretch items-center gap-2 rounded-xl py-1.5 text-left transition ${
+                          isFocused
+                            ? 'bg-blue-50/70'
+                            : 'hover:bg-gray-50'
+                        }`}
                       >
                         <div
                           className={`text-sm leading-6 font-medium ${
-                            isActive ? 'text-blue-600' : 'text-gray-300'
+                            isFocused ? 'text-blue-600' : 'text-gray-300'
                           }`}
                         >
                           {step}
                         </div>
-                      </div>
+                      </button>
                     )
                   })}
                 </div>
+              </div>
+            </div>
+
+            <div className="flex w-60 flex-col gap-2">
+              <div className="text-xs leading-4 font-medium text-slate-500">
+                AI 전문가
+              </div>
+              <div className="flex w-60 flex-col gap-1">
+                {EXPERT_DEFINITIONS.filter((expert) => expert.key !== 'aidee').map(
+                  (expert) => (
+                    <SidebarExpertRow
+                      key={expert.key}
+                      expertKey={expert.key}
+                      selected={currentStageExperts.includes(expert.key)}
+                    />
+                  )
+                )}
               </div>
             </div>
           </div>
@@ -1717,10 +1810,8 @@ export default function ChatPage({
             const canShowAdvanceButton =
               m.role === 'assistant' &&
               m.id === latestAideeAssistantId &&
-              ['step_2_research', 'step_3_direction', 'step_5_design'].includes(
-                currentStageKey
-              ) &&
-              Boolean(getNextStageKey(currentStageKey))
+              Boolean(pendingNextStageKey) &&
+              pendingNextStageKey !== currentStageKey
 
             if (isPersonaCard) {
               const personaData = parsePersonaData(m.content)
@@ -1871,15 +1962,13 @@ export default function ChatPage({
                     isDownloadingRfp={isDownloadingRfp}
                     isLoading={isLoading}
                     onDownload={() => void handleRfpDownload()}
-                    onCompanyConnect={() =>
-                      setInput('협력업체 연결을 진행해주세요.')
-                    }
+                    onCompanyConnect={() => void requestNextStage()}
                   />
                 ) : null}
                 {canShowAdvanceButton ? (
                   <div className="mt-3 flex items-center gap-2">
                     <StageAdvanceButton
-                      label="다음 단계로 넘어갈까요?"
+                      label="다음 단계로 넘어가기"
                       onClick={() => void requestNextStage()}
                       disabled={isLoading}
                     />
@@ -2088,7 +2177,7 @@ export default function ChatPage({
                     ? '원하는 전문가를 선택해서 물어보세요.'
                     : activeExpertDefinition.inputLabel
                 }
-                className="max-h-[200px] flex-1 resize-none bg-transparent px-1 py-3 text-base leading-relaxed font-medium outline-none placeholder:text-zinc-400"
+                className="max-h-[200px] flex-1 resize-none bg-transparent px-1 py-3 text-base leading-relaxed font-medium text-neutral-900 caret-blue-600 outline-none placeholder:text-zinc-400"
               />
               <button
                 type="submit"

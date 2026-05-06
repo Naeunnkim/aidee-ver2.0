@@ -74,8 +74,8 @@ export const STAGE_DEFINITIONS: Array<{
   {
     key: 'step_6_company',
     label: '협력업체 연결',
-    sidebarLabel: '평가 및 RFP 문서 생성',
-    sidebarIndex: 5,
+    sidebarLabel: '협력업체 연결',
+    sidebarIndex: 6,
   },
 ]
 
@@ -86,6 +86,7 @@ export const SIDEBAR_STEPS = [
   '스타일 컨셉 도출',
   '디자인 제안',
   '평가 및 RFP 문서 생성',
+  '협력업체 연결',
 ]
 
 const NEXT_STAGE_KEY_MAP: Record<StageKey, StageKey | null> = {
@@ -113,4 +114,10 @@ export function isKnownStageKey(value: string): value is StageKey {
 
 export function getNextStageKey(stageKey: StageKey) {
   return NEXT_STAGE_KEY_MAP[stageKey] ?? null
+}
+
+export function getStageKeysForSidebarIndex(sidebarIndex: number) {
+  return STAGE_DEFINITIONS.filter(
+    (stage) => stage.sidebarIndex === sidebarIndex
+  ).map((stage) => stage.key)
 }

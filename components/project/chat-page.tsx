@@ -665,7 +665,8 @@ export default function ChatPage({
   const selectableExperts = EXPERT_DEFINITIONS.filter(
     (expert) => expert.key !== 'aidee'
   )
-  const currentStageExperts = getStageExperts(currentStageKey)
+  const uiStageKey = pendingNextStageKey ?? currentStageKey
+  const currentStageExperts = getStageExperts(uiStageKey)
   const scrollToSidebarStep = useCallback((sidebarIndex: number) => {
     setFocusedSidebarIndex(sidebarIndex)
     setHasManualSidebarFocus(true)
@@ -936,6 +937,8 @@ export default function ChatPage({
       ) {
         if (nextStageHeader !== currentStageKey) {
           setPendingNextStageKey(nextStageHeader)
+          setFocusedSidebarIndex(getSidebarStepIndex(nextStageHeader))
+          setHasManualSidebarFocus(false)
         }
         return
       }
@@ -1168,9 +1171,9 @@ export default function ChatPage({
   }, [messages, isLoading])
 
   useEffect(() => {
-    setFocusedSidebarIndex(getSidebarStepIndex(currentStageKey))
+    setFocusedSidebarIndex(getSidebarStepIndex(uiStageKey))
     setHasManualSidebarFocus(false)
-  }, [currentStageKey])
+  }, [uiStageKey])
 
   useEffect(() => {
     const latestRfpMessage = [...messages]
@@ -1763,7 +1766,7 @@ export default function ChatPage({
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
               <p className="text-sm font-medium text-sky-700">{projectTitle}</p>
-              <p className="text-xs text-zinc-400">현재 단계: {currentStageKey}</p>
+              <p className="text-xs text-zinc-400">현재 단계: {uiStageKey}</p>
               {latestGeneratedImageBlock?.images.length ? (
                 <p className="text-xs text-zinc-400">
                   최근 생성 이미지: {latestGeneratedImageBlock.images.length}장

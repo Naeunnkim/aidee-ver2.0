@@ -4,6 +4,17 @@ export type GeneratedImageBlock = {
   model: string
 }
 
+const DEFAULT_NANO_BANANA_MODEL = 'gemini-2.5-flash-image'
+
+const NANO_BANANA_MODEL_ALIASES: Record<string, string> = {
+  'gemini-2.5-flash-image-preview': DEFAULT_NANO_BANANA_MODEL,
+  'gemini-3.1-flash-image-preview': DEFAULT_NANO_BANANA_MODEL,
+}
+
+function normalizeNanoBananaModel(model: string) {
+  return NANO_BANANA_MODEL_ALIASES[model] ?? model
+}
+
 function getGeminiApiKey() {
   const apiKey =
     process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY
@@ -136,26 +147,37 @@ async function generateSingleNanobananaImage({
 export async function generateNanoBananaImages({
   prompt,
   count = 1,
-  model = 'gemini-3.1-flash-image-preview',
+  model = DEFAULT_NANO_BANANA_MODEL,
 }: {
   prompt: string
   count?: number
   model?: string
 }) {
-  const images: string[] = []
+  const resolvedModel = normalizeNanoBananaModel(model)
 
-  for (let index = 0; index < count; index += 1) {
-    const image = await generateSingleNanobananaImage({
-      prompt: buildNanobananaPrompt({ prompt, count, index }),
-      model,
+  const settledImages = await Promise.allSettled(
+    Array.from({ length: count }, (_, index) =>
+      generateSingleNanobananaImage({
+        prompt: buildNanobananaPrompt({ prompt, count, index }),
+        model: resolvedModel,
+      })
+    )
+  )
+
+  const images = settledImages
+    .filter((result): result is PromiseFulfilledResult<string> => {
+      return result.status === 'fulfilled'
     })
-    images.push(image)
+    .map((result) => result.value)
+
+  if (images.length === 0) {
+    throw new Error('Nano Banana returned no generated images')
   }
 
   return {
     images,
     prompt,
-    model,
+    model: resolvedModel,
   } satisfies GeneratedImageBlock
 }
 
@@ -175,10 +197,25 @@ ${JSON.stringify(payload)}
 
 export function extractGeneratedImagesBlock(text: string) {
   const match = text.match(
-    /<<AIDEE_IMAGES>>[\s\n]*([\s\S]*?)[\s\n]*<<\/AIDEE_IMAGES>>/
+    /<<\s*AIDEE[-_ ]?IMAGES\s*>>[\s\n]*([\s\S]*?)[\s\n]*<<\s*\/\s*AIDEE[-_ ]?IMAGES\s*>>/i
   )
 
   if (!match) {
+    const fallbackImages = text
+      .match(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g)
+      ?.filter((value) => typeof value === 'string') ?? []
+
+    if (fallbackImages.length > 0) {
+      return {
+        cleanedText: text.trim(),
+        imageBlock: {
+          images: fallbackImages,
+          prompt: '',
+          model: 'fallback-inline-data',
+        } satisfies GeneratedImageBlock,
+      }
+    }
+
     return {
       cleanedText: text.trim(),
       imageBlock: null as GeneratedImageBlock | null,
@@ -186,7 +223,7 @@ export function extractGeneratedImagesBlock(text: string) {
   }
 
   const cleanedText = text.replace(
-    /\n?<<AIDEE_IMAGES>>[\s\S]*?<<\/AIDEE_IMAGES>>\s*$/,
+    /\n?<<\s*AIDEE[-_ ]?IMAGES\s*>>[\s\S]*?<<\s*\/\s*AIDEE[-_ ]?IMAGES\s*>>\s*$/i,
     ''
   )
 

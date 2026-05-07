@@ -302,6 +302,14 @@ function buildReferenceContext(referenceImages: ReferenceImageRecord[]) {
     : '레퍼런스 이미지 분석 결과 없음'
 }
 
+function truncateText(text: string, maxLength: number) {
+  if (text.length <= maxLength) {
+    return text
+  }
+
+  return `${text.slice(0, maxLength)}\n...[truncated]`
+}
+
 function buildConversationText(messages: ModelMessage[]) {
   return messages
     .map((message) => {
@@ -331,7 +339,10 @@ function buildFallbackImagePrompt({
   userRequest: string
 }) {
   const requirements = JSON.stringify(project?.requirements ?? {}, null, 2)
-  const guidelineBlock = buildReferenceGuidelineBlock(referenceImages)
+  const guidelineBlock = truncateText(
+    buildReferenceGuidelineBlock(referenceImages),
+    2400
+  )
 
   return [
     'Create a polished product design visualization based on the following project context.',
@@ -363,7 +374,12 @@ function buildStyleReferencePrompt({
   conversation: string
 }) {
   const requirements = JSON.stringify(project?.requirements ?? {}, null, 2)
-  const guidelineBlock = buildReferenceGuidelineBlock(referenceImages)
+  const guidelineBlock = truncateText(
+    buildReferenceGuidelineBlock(referenceImages),
+    2400
+  )
+  const conversationSnippet = truncateText(conversation, 3000)
+  const requirementsSnippet = truncateText(requirements, 1800)
 
   return [
     'Create one standalone style reference image for a product design concept selection step.',
@@ -372,10 +388,10 @@ function buildStyleReferencePrompt({
     `Project title: ${project?.title || 'Untitled project'}`,
     '',
     'Project requirements:',
-    requirements,
+    requirementsSnippet,
     '',
     'Conversation context:',
-    conversation,
+    conversationSnippet,
     '',
     'Reference design guidelines:',
     guidelineBlock,
@@ -387,6 +403,101 @@ function buildStyleReferencePrompt({
     '- no text overlay, no UI, no watermark',
     '- high-quality style board or product concept visual suitable for user selection',
   ].join('\n')
+}
+
+function buildCompactStyleReferencePrompt({
+  project,
+  referenceImages,
+}: {
+  project: ProjectRecord | null
+  referenceImages: ReferenceImageRecord[]
+}) {
+  const guidelineBlock = truncateText(
+    buildReferenceGuidelineBlock(referenceImages),
+    1200
+  )
+
+  return [
+    'Create one standalone style reference image for product design selection.',
+    `Project title: ${project?.title || 'Untitled project'}`,
+    '',
+    'Reference design guidelines:',
+    guidelineBlock,
+    '',
+    'Return one clear image only. No text, no collage, no UI, no watermark.',
+  ].join('\n')
+}
+
+async function generateStyleReferenceImages({
+  project,
+  referenceImages,
+  conversation,
+}: {
+  project: ProjectRecord | null
+  referenceImages: ReferenceImageRecord[]
+  conversation: string
+}) {
+  const attempts = [
+    {
+      label: 'full',
+      prompt: buildStyleReferencePrompt({
+        project,
+        referenceImages,
+        conversation,
+      }),
+      count: 3,
+    },
+    {
+      label: 'compact',
+      prompt: buildCompactStyleReferencePrompt({
+        project,
+        referenceImages,
+      }),
+      count: 3,
+    },
+    {
+      label: 'compact-single',
+      prompt: buildCompactStyleReferencePrompt({
+        project,
+        referenceImages,
+      }),
+      count: 1,
+    },
+  ]
+
+  for (const attempt of attempts) {
+    console.log('[style-images] attempt start', {
+      label: attempt.label,
+      promptLength: attempt.prompt.length,
+      count: attempt.count,
+      projectTitle: project?.title || 'Untitled project',
+      referenceCount: referenceImages.length,
+    })
+
+    try {
+      const payload = await generateNanoBananaImages({
+        prompt: attempt.prompt,
+        count: attempt.count,
+      })
+
+      console.log('[style-images] attempt success', {
+        label: attempt.label,
+        imageCount: payload.images.length,
+        model: payload.model,
+      })
+
+      if (payload.images.length > 0) {
+        return payload
+      }
+    } catch (error) {
+      console.error('[style-images] attempt failed', {
+        label: attempt.label,
+        error,
+      })
+    }
+  }
+
+  return null
 }
 
 function hasStyleReferenceSelection(text: string) {
@@ -984,10 +1095,47 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
     }
 
     let generatedImagePayload: GeneratedImageBlock | null = null
+    const shouldGenerateStyleReferenceImages =
+      currentStageKey === 'step_4_style' &&
+      !hasStyleReferenceSelection(lastUserMessage)
     const isStyleReferenceSelectionTurn =
       currentStageKey === 'step_4_style' &&
       hasStyleReferenceSelection(lastUserMessage)
     const canGenerateImages = canGenerateImagesInStage(currentStageKey)
+
+    if (shouldGenerateStyleReferenceImages) {
+      console.log('[style-images] direct style generation branch entered', {
+        currentStageKey,
+        lastUserMessage,
+        conversationLength: buildConversationText(messages).length,
+      })
+      generatedImagePayload = await generateStyleReferenceImages({
+        project,
+        referenceImages,
+        conversation: buildConversationText(messages),
+      })
+    }
+    const shouldBypassModelTextForStyleImages = shouldGenerateStyleReferenceImages
+
+    if (generatedImagePayload && shouldGenerateStyleReferenceImages) {
+      const styleText =
+        '스타일 레퍼런스 3장을 생성했습니다. 마음에 드는 방향을 하나 선택해주세요.'
+      return new Response(
+        appendGeneratedImagesBlock({
+          text: styleText,
+          payload: generatedImagePayload,
+        }),
+        {
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'x-aidee-current-stage': currentStageKey,
+            'x-aidee-next-stage': currentStageKey,
+            'x-aidee-transition': 'no',
+            'x-aidee-reason': 'style_references_generated',
+          },
+        }
+      )
+    }
 
     const result = await generateText({
       model: google('gemini-2.5-flash'),
@@ -1031,7 +1179,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
                       'gemini-2.5-flash-image',
                       'gemini-3.1-flash-image-preview',
                     ])
-                    .default('gemini-3.1-flash-image-preview')
+                    .default('gemini-2.5-flash-image')
                     .describe('Nano Banana model to use'),
                 }),
                 execute: async ({ prompt, count, model }) => {
@@ -1096,6 +1244,11 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
 
     let finalText = normalizeChoiceFormatting(sanitizeAssistantText(cleanedText))
 
+    if (shouldBypassModelTextForStyleImages) {
+      finalText =
+        '스타일 레퍼런스 3장을 생성했습니다. 마음에 드는 방향을 하나 선택해주세요.'
+    }
+
     if (
       !generatedImagePayload &&
       canGenerateImages &&
@@ -1131,24 +1284,23 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
           stageMeta.nextStageKey === 'step_5_design')) &&
       !hasStyleReferenceSelection(lastUserMessage)
     ) {
-      try {
-        generatedImagePayload = await generateNanoBananaImages({
-          prompt: buildStyleReferencePrompt({
-            project,
-            referenceImages,
-            conversation: buildConversationText(messages),
-          }),
-          count: 3,
-        })
+      generatedImagePayload = await generateStyleReferenceImages({
+        project,
+        referenceImages,
+        conversation: buildConversationText(messages),
+      })
 
-        if (!finalText.trim()) {
-          finalText =
-            '스타일 레퍼런스 3장을 생성했습니다. 마음에 드는 방향을 하나 선택해주세요.'
-        } else if (!/선택|이미지|레퍼런스/.test(finalText)) {
-          finalText = `${finalText}\n\n스타일 레퍼런스 3장을 생성했습니다. 마음에 드는 방향을 하나 선택해주세요.`
-        }
-      } catch (error) {
-        console.error('Style reference image generation failed:', error)
+      if (!finalText.trim()) {
+        finalText =
+          generatedImagePayload?.images.length === 1
+            ? '스타일 레퍼런스 1장을 생성했습니다. 마음에 드는 방향을 선택해주세요.'
+            : '스타일 레퍼런스 3장을 생성했습니다. 마음에 드는 방향을 하나 선택해주세요.'
+      } else if (!/선택|이미지|레퍼런스/.test(finalText)) {
+        finalText = `${finalText}\n\n${
+          generatedImagePayload?.images.length === 1
+            ? '스타일 레퍼런스 1장을 생성했습니다. 마음에 드는 방향을 선택해주세요.'
+            : '스타일 레퍼런스 3장을 생성했습니다. 마음에 드는 방향을 하나 선택해주세요.'
+        }`
       }
     }
 

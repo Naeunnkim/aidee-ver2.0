@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import { useState, useTransition } from 'react'
 
 import { createClient } from '@/lib/supabase/client'
@@ -75,11 +76,22 @@ export function GoogleLoginButton({
         disabled={isDisabled}
         className="inline-flex h-14 w-full items-center justify-center gap-2 rounded-full border border-zinc-200 bg-white px-5 text-base font-semibold text-zinc-900 shadow-sm transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        <span
-          className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold ${iconStyles[icon]}`}
-        >
-          {iconLabel[icon]}
-        </span>
+        {icon === 'google' ? (
+          <Image
+            src="/icons/social/google.svg"
+            alt=""
+            width={24}
+            height={24}
+            unoptimized
+            className="h-6 w-6"
+          />
+        ) : (
+          <span
+            className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold ${iconStyles[icon]}`}
+          >
+            {iconLabel[icon]}
+          </span>
+        )}
         <span>{isPending && icon === 'google' ? '이동 중...' : label}</span>
       </button>
 

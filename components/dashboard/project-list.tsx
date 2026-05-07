@@ -1,6 +1,8 @@
 'use client'
 
+import Image from 'next/image'
 import Link from 'next/link'
+import type { FormEvent } from 'react'
 import { useCallback, useEffect, useState } from 'react'
 
 import ProjectModal from '@/components/dashboard/project-modal'
@@ -58,6 +60,7 @@ export function ProjectList({ user }: ProjectListProps) {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
+  const [draftSearchTerm, setDraftSearchTerm] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
 
@@ -178,18 +181,37 @@ export function ProjectList({ user }: ProjectListProps) {
     project.title.toLowerCase().includes(searchTerm.toLowerCase())
   )
 
+  function handleSearchSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSearchTerm(draftSearchTerm.trim())
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="w-full border-b border-gray-200 bg-white px-6 py-3">
         <div className="mx-auto flex w-full max-w-[1300px] items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="h-7 w-20 rounded-full bg-gradient-to-r from-sky-500 to-blue-700" />
-            <div className="text-sm font-medium text-zinc-500">
-              {user.displayName}님
-            </div>
+            <Link
+              href="/dashboard"
+              aria-label="Aidee 대시보드"
+              className="inline-flex h-10 items-center"
+            >
+              <Image
+                src="/brand/aidee-logo-blue.svg"
+                alt="Aidee"
+                width={115}
+                height={40}
+                unoptimized
+                priority
+                className="h-7 w-auto"
+              />
+            </Link>
           </div>
 
           <div className="flex items-center gap-3">
+            <div className="text-sm font-medium text-zinc-500">
+              {user.displayName}님
+            </div>
             <div className="rounded-full bg-gradient-to-bl from-[#8BEAFF] to-[#4D95FF] px-4 py-1">
               <div className="flex items-center gap-2">
                 <span className="text-xs text-white">✦</span>
@@ -199,7 +221,7 @@ export function ProjectList({ user }: ProjectListProps) {
             <form action="/auth/logout" method="post">
               <button
                 type="submit"
-                className="inline-flex h-9 items-center justify-center rounded-full border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50"
+                className="inline-flex items-center justify-center rounded-full border border-zinc-200 bg-white px-4 py-1 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50"
               >
                 로그아웃
               </button>
@@ -227,16 +249,35 @@ export function ProjectList({ user }: ProjectListProps) {
               ))}
             </div>
 
-            <div className="flex w-full items-center gap-3 md:w-auto">
+            <form
+              onSubmit={handleSearchSubmit}
+              className="flex w-full items-center gap-3 md:w-auto"
+            >
               <div className="flex h-11 flex-1 items-center justify-between rounded-full border border-gray-300 bg-white px-5 shadow-sm md:w-80">
                 <input
                   type="text"
-                  value={searchTerm}
-                  onChange={(event) => setSearchTerm(event.target.value)}
+                  value={draftSearchTerm}
+                  onChange={(event) => {
+                    setDraftSearchTerm(event.target.value)
+                    setSearchTerm(event.target.value.trim())
+                  }}
                   placeholder="찾고있는 프로젝트를 검색해주세요."
                   className="w-full bg-transparent text-sm outline-none placeholder:text-zinc-400"
                 />
-                <span className="text-sm text-zinc-400">⌕</span>
+                <button
+                  type="submit"
+                  aria-label="프로젝트 검색"
+                  className="ml-3 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition hover:bg-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                >
+                  <Image
+                    src="/icons/ui/icon/search.svg"
+                    alt=""
+                    width={16}
+                    height={16}
+                    unoptimized
+                    className="opacity-60"
+                  />
+                </button>
               </div>
               <button
                 type="button"
@@ -245,7 +286,7 @@ export function ProjectList({ user }: ProjectListProps) {
               >
                 프로젝트 생성
               </button>
-            </div>
+            </form>
           </div>
 
           {loading ? (

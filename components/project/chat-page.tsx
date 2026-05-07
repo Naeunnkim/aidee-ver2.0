@@ -1824,6 +1824,9 @@ export default function ChatPage({
               m.role === 'assistant' &&
               (m.content.includes('# 제품 제안요청서') ||
                 m.content.includes('## 1. 프로젝트 개요'))
+            const isStyleReferenceImageMessage =
+              m.generatedImagePurpose === 'style_reference' ||
+              stageKeyForMessage === 'step_4_style'
 
             if (isPersonaCard) {
               const personaData = parsePersonaData(m.content)
@@ -1924,7 +1927,14 @@ export default function ChatPage({
                         </p>
                       ) : null}
                     </div>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div
+                      className={`grid gap-3 ${
+                        isStyleReferenceImageMessage &&
+                        m.generatedImages.length === 3
+                          ? 'grid-cols-1 sm:grid-cols-3'
+                          : 'grid-cols-1 sm:grid-cols-2'
+                      }`}
+                    >
                       {m.generatedImages.map((image, index) => (
                         <div
                           key={`${m.id}-image-${index}`}
@@ -1937,9 +1947,13 @@ export default function ChatPage({
                           <img
                             src={image}
                             alt={`generated-${index + 1}`}
-                            className="aspect-[4/3] w-full object-cover"
+                            className={`w-full object-cover ${
+                              isStyleReferenceImageMessage
+                                ? 'h-40'
+                                : 'aspect-[4/3]'
+                            }`}
                           />
-                          {currentStageKey === 'step_4_style' ? (
+                          {isStyleReferenceImageMessage ? (
                             <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
                               <span className="text-xs font-medium text-slate-500">
                                 레퍼런스 {index + 1}

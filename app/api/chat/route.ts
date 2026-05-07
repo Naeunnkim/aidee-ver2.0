@@ -102,6 +102,24 @@ function isImageGenerationRequest(text: string) {
   ].some((keyword) => normalized.includes(keyword))
 }
 
+function hasNanoBananaPlaceholder(text: string) {
+  return (
+    /\[\s*\/?\s*Nano Banana\s*이미지\s*생성\s*요청\s*\]/i.test(text) ||
+    /Generating\s+[1-4]\s+images?\s+based\s+on/i.test(text) ||
+    /잠시\s*후\s*이미지가\s*생성됩니다/i.test(text)
+  )
+}
+
+function getStyleReferenceIntro(imageCount = 3) {
+  const countLabel = imageCount === 1 ? '1장' : `${imageCount}장`
+
+  return [
+    '이제 원하는 스타일을 구체화하는 시간입니다.',
+    '앞서 정리한 가치 키워드와 우선순위를 시각적으로 풀어냈습니다.',
+    `아래 스타일 레퍼런스 ${countLabel}을 확인하고, 원하는 방향을 하나 선택해주세요.`,
+  ].join('\n')
+}
+
 function canGenerateImagesInStage(stageKey: StageKey) {
   return stageKey === 'step_4_style' || stageKey === 'step_5_design'
 }
@@ -501,14 +519,6 @@ async function generateStyleReferenceImages({
       }),
       count: 3,
     },
-    {
-      label: 'compact-single',
-      prompt: buildCompactStyleReferencePrompt({
-        project,
-        referenceImages,
-      }),
-      count: 1,
-    },
   ]
 
   for (const attempt of attempts) {
@@ -533,9 +543,14 @@ async function generateStyleReferenceImages({
         model: payload.model,
       })
 
-      if (payload.images.length > 0) {
+      if (payload.images.length >= 3) {
         return payload
       }
+
+      console.warn('[style-images] partial result ignored', {
+        label: attempt.label,
+        imageCount: payload.images.length,
+      })
     } catch (error) {
       console.error('[style-images] attempt failed', {
         label: attempt.label,
@@ -753,10 +768,18 @@ function sanitizeAssistantText(text: string) {
     /도구를\s*(호출|사용)/i,
     /함수를\s*호출/i,
     /Nano Banana\s*(API|api)\s*(호출|요청)/i,
+    /\[\s*\/?\s*Nano Banana\s*이미지\s*생성\s*요청\s*\]/i,
+    /Generating\s+[1-4]\s+images?\s+based\s+on/i,
+    /잠시\s*후\s*이미지가\s*생성됩니다/i,
     /<<AIDEE_STAGE>>[\s\S]*?<<\/AIDEE_STAGE>>/i,
   ]
 
-  const lines = text
+  const textWithoutNanoBananaBlock = text.replace(
+    /\[\s*Nano Banana\s*이미지\s*생성\s*요청\s*\][\s\S]*?\[\s*\/\s*Nano Banana\s*이미지\s*생성\s*요청\s*\]/gi,
+    ''
+  )
+
+  const lines = textWithoutNanoBananaBlock
     .split('\n')
     .filter((line) => !blockedPatterns.some((pattern) => pattern.test(line)))
 
@@ -1243,8 +1266,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
     const shouldBypassModelTextForStyleImages = shouldGenerateStyleReferenceImages
 
     if (generatedImagePayload && shouldGenerateStyleReferenceImages) {
-      const styleText =
-        '스타일 레퍼런스 3장을 생성했습니다. 마음에 드는 방향을 하나 선택해주세요.'
+      const styleText = getStyleReferenceIntro(generatedImagePayload.images.length)
       return new Response(
         appendGeneratedImagesBlock({
           text: styleText,
@@ -1369,10 +1391,12 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
     }
 
     let finalText = normalizeChoiceFormatting(sanitizeAssistantText(cleanedText))
+    const modelPrintedNanoBananaPlaceholder =
+      hasNanoBananaPlaceholder(cleanedText) ||
+      hasNanoBananaPlaceholder(result.text)
 
     if (shouldBypassModelTextForStyleImages) {
-      finalText =
-        '스타일 레퍼런스 3장을 생성했습니다. 마음에 드는 방향을 하나 선택해주세요.'
+      finalText = getStyleReferenceIntro(generatedImagePayload?.images.length ?? 3)
     }
 
     if (
@@ -1422,32 +1446,41 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
       }
     }
 
-    if (
+    const shouldGenerateStyleReferencesAfterModel =
       !generatedImagePayload &&
-      ((canGenerateImages &&
-        (currentStageKey === 'step_4_style' ||
-          stageMeta.nextStageKey === 'step_4_style')) ||
-        (currentStageKey === 'step_5_design' &&
-          stageMeta.nextStageKey === 'step_5_design')) &&
-      !hasStyleReferenceSelection(lastUserMessage)
-    ) {
+      !expertCall &&
+      !hasStyleReferenceSelection(lastUserMessage) &&
+      (currentStageKey === 'step_4_style' ||
+        stageMeta.currentStageKey === 'step_4_style' ||
+        stageMeta.nextStageKey === 'step_4_style' ||
+        modelPrintedNanoBananaPlaceholder)
+
+    if (shouldGenerateStyleReferencesAfterModel) {
       generatedImagePayload = await generateStyleReferenceImages({
         project,
         referenceImages,
         conversation: buildConversationText(messages),
       })
 
-      if (!finalText.trim()) {
+      if (generatedImagePayload) {
+        finalText = getStyleReferenceIntro(generatedImagePayload.images.length)
+      } else if (modelPrintedNanoBananaPlaceholder) {
         finalText =
-          generatedImagePayload?.images.length === 1
-            ? '스타일 레퍼런스 1장을 생성했습니다. 마음에 드는 방향을 선택해주세요.'
-            : '스타일 레퍼런스 3장을 생성했습니다. 마음에 드는 방향을 하나 선택해주세요.'
+          '스타일 레퍼런스 이미지를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.'
+      } else if (!finalText.trim()) {
+        finalText =
+          '스타일 레퍼런스 이미지를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.'
       } else if (!/선택|이미지|레퍼런스/.test(finalText)) {
-        finalText = `${finalText}\n\n${
-          generatedImagePayload?.images.length === 1
-            ? '스타일 레퍼런스 1장을 생성했습니다. 마음에 드는 방향을 선택해주세요.'
-            : '스타일 레퍼런스 3장을 생성했습니다. 마음에 드는 방향을 하나 선택해주세요.'
-        }`
+        finalText = `${finalText}\n\n스타일 레퍼런스 이미지를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.`
+      }
+
+      if (generatedImagePayload) {
+        stageMeta = {
+          currentStageKey: 'step_4_style',
+          nextStageKey: 'step_4_style',
+          transition: false,
+          reason: 'style_references_generated',
+        }
       }
     }
 

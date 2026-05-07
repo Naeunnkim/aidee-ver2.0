@@ -33,13 +33,17 @@ type CardLayoutWithRefProps = CardLayoutProps & {
   cardRef?: Ref<HTMLDivElement>
 }
 
+const PERSONA_CARD_WIDTH = 492
+const PERSONA_CARD_HEIGHT = 256
+const PERSONA_CARD_DISPLAY_SCALE = 1.35
+
 export default function PersonaCard({
   data,
   onAdjust,
   onProceed,
 }: PersonaCardProps) {
   const cardRef = useRef<HTMLDivElement>(null)
-  const exportCardRef = useRef<HTMLDivElement>(null)
+  const displayCardRef = useRef<HTMLDivElement>(null)
 
   const waitForImages = async (root: HTMLElement) => {
     const images = Array.from(root.querySelectorAll('img'))
@@ -58,8 +62,8 @@ export default function PersonaCard({
   }
 
   const onDownload = async (format: 'png' | 'jpeg' = 'png') => {
-    const exportTarget = exportCardRef.current
-    if (!exportTarget) {
+    const target = displayCardRef.current
+    if (!target) {
       return
     }
 
@@ -67,31 +71,51 @@ export default function PersonaCard({
       if ('fonts' in document) {
         await (document as Document & { fonts: FontFaceSet }).fonts.ready
       }
-      await waitForImages(exportTarget)
+      await waitForImages(target)
 
-      const { width, height } = exportTarget.getBoundingClientRect()
       const exportScale = 3
+      const { width, height } = target.getBoundingClientRect()
 
-      const canvas = await html2canvas(exportTarget, {
+      const canvas = await html2canvas(target, {
         backgroundColor: '#ffffff',
         useCORS: true,
         scale: exportScale,
-        width: Math.round(width),
-        height: Math.round(height),
         windowWidth: Math.round(width),
         windowHeight: Math.round(height),
+        scrollX: 0,
+        scrollY: 0,
         imageTimeout: 0,
         logging: false,
         removeContainer: true,
         foreignObjectRendering: false,
       })
 
-      const link = document.createElement('a')
       const mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png'
       const extension = format === 'jpeg' ? 'jpg' : 'png'
+
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(
+          (nextBlob) => {
+            if (nextBlob) {
+              resolve(nextBlob)
+              return
+            }
+
+            reject(new Error('Persona card image export failed'))
+          },
+          mimeType,
+          1
+        )
+      })
+
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
       link.download = `persona_card.${extension}`
-      link.href = canvas.toDataURL(mimeType, 1)
+      link.href = url
+      document.body.appendChild(link)
       link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
     } catch (error) {
       console.error('Download failed', error)
     }
@@ -99,10 +123,19 @@ export default function PersonaCard({
 
   return (
     <>
-      <div className="my-4 flex w-full max-w-[800px] flex-col gap-3">
-        <CardLayoutWithRef cardRef={cardRef} data={data} mode="screen" />
+      <div className="my-4 flex w-full max-w-[664px] flex-col gap-3">
+        <div
+          ref={displayCardRef}
+          className="pointer-events-none origin-top-left scale-[1.35]"
+          style={{
+            width: `${PERSONA_CARD_WIDTH}px`,
+            height: `${PERSONA_CARD_HEIGHT * PERSONA_CARD_DISPLAY_SCALE}px`,
+          }}
+        >
+          <CardLayoutWithRef cardRef={cardRef} data={data} mode="screen" />
+        </div>
 
-        <div className="flex gap-2">
+        <div className="relative z-10 flex gap-2">
           <button
             type="button"
             onClick={() => onAdjust?.()}
@@ -126,163 +159,62 @@ export default function PersonaCard({
           </button>
         </div>
       </div>
-
-      <div
-        style={{
-          position: 'fixed',
-          left: '-10000px',
-          top: 0,
-          width: '800px',
-          zIndex: -1,
-          pointerEvents: 'none',
-          opacity: 1,
-        }}
-        aria-hidden="true"
-      >
-        <CardLayoutWithRef
-          cardRef={exportCardRef}
-          data={data}
-          mode="export"
-        />
-      </div>
     </>
   )
 }
 
-const CardLayout = ({ data, mode, cardRef }: CardLayoutWithRefProps) => {
-  const isExport = mode === 'export'
-
+const CardLayout = ({ data, cardRef }: CardLayoutWithRefProps) => {
   return (
     <div
       ref={cardRef}
       data-persona-card="true"
-        className={`flex w-full rounded-3xl font-sans ${isExport ? '' : 'overflow-hidden'}`}
-        style={{
-        minHeight: isExport ? 'unset' : '560px',
-        height: isExport ? 'auto' : '560px',
+      className="relative h-64 w-[492px] max-w-full overflow-hidden rounded-xl font-sans shadow-[0px_0px_24px_0px_rgba(0,0,0,0.12)]"
+      style={{
+        width: `${PERSONA_CARD_WIDTH}px`,
+        height: `${PERSONA_CARD_HEIGHT}px`,
         backgroundColor: '#ffffff',
-        border: '1px solid #f3f4f6',
-        boxShadow: isExport ? 'none' : '0 20px 40px rgba(15, 23, 42, 0.08)',
       }}
     >
       <div
-        className="relative w-[30%] shrink-0"
-        style={{
-          backgroundColor: '#e5e7eb',
-          minHeight: isExport ? '640px' : '100%',
-        }}
+        className="absolute left-0 top-0 h-64 w-36 rounded-bl-lg rounded-tl-lg"
+        style={{ backgroundColor: '#d4d4d8' }}
       >
-        <img
-          src={data.imageUrl || 'https://placehold.co/240x480'}
-          className="absolute inset-0 h-full w-full object-cover"
-          alt="Persona"
-        />
+        {data.imageUrl ? (
+          <img
+            src={data.imageUrl}
+            className="absolute inset-0 h-full w-full object-cover"
+            alt="Persona"
+          />
+        ) : null}
       </div>
 
-      <div
-        className={
-          isExport
-            ? 'flex flex-1 flex-col gap-4 px-8 pt-7 pb-7'
-            : 'flex flex-1 flex-col gap-3 overflow-hidden px-7 pt-6 pb-5'
-        }
-      >
-        <div className="flex items-start justify-between">
-          <h2
-            className={
-              isExport
-                ? 'text-[30px] leading-tight font-bold tracking-tight'
-                : 'pt-0.5 text-xl leading-tight font-bold tracking-tight'
-            }
-            style={{ color: '#3f3f46' }}
-          >
-            Persona Card
-          </h2>
-          <button
-            type="button"
-            className={
-              isExport
-                ? 'rounded-full px-4 py-1.5 text-xs font-medium uppercase'
-                : '-mt-0.5 rounded-full px-3 py-1 text-[10px] font-medium uppercase'
-            }
-            style={{ backgroundColor: '#2563eb', color: '#ffffff' }}
-          >
-            Validated
-          </button>
+      <div className="absolute left-[167px] top-[9.5px] flex h-[238px] w-80 flex-col items-start justify-start gap-1 overflow-hidden">
+        <div className="flex w-72 flex-col items-start justify-start">
+          <div className="inline-flex items-end justify-start gap-1">
+            <h2
+              className="text-center text-lg font-bold"
+              style={{ color: '#3f3f46' }}
+            >
+              Persona Card
+            </h2>
+          </div>
         </div>
 
-        <div
-          className={
-            isExport
-              ? 'space-y-4'
-              : 'flex-1 space-y-3 overflow-y-auto pr-1'
-          }
-        >
-          <div
-            className={
-              isExport
-                ? 'grid grid-cols-2 gap-x-8 gap-y-4'
-                : 'grid grid-cols-2 gap-x-5 gap-y-3'
-            }
-          >
-            <MiniSection title="User" items={data.user} mode={mode} />
-            <MiniSection title="Behavior Map" items={data.behaviorMap} mode={mode} />
-            <MiniSection
-              title="Correlation Analysis"
-              items={data.correlationAnalysis}
-              mode={mode}
-            />
-            <MiniSection title="Problem" items={data.problem} mode={mode} />
-            <div className="col-span-2">
-              <MiniSection title="Decision" items={data.decision} mode={mode} />
-            </div>
+        <div className="inline-flex items-start justify-start gap-5 self-stretch">
+          <div className="inline-flex w-32 flex-col items-start justify-start gap-1.5">
+            <MiniSection title="User" items={data.user} />
+            <MiniSection title="Usage" items={data.behaviorMap} />
+            <MiniSection title="Decision" items={data.decision} />
           </div>
 
-          <div
-            className={isExport ? 'pt-3' : 'pt-2'}
-            style={{ borderTop: '1px solid #f3f4f6' }}
-          >
-            <h4
-              className={
-                isExport
-                  ? 'mb-3 text-xs font-bold uppercase'
-                  : 'mb-2 text-[10px] font-bold uppercase'
-              }
-              style={{ color: '#2563eb' }}
-            >
-              Success
-            </h4>
-            <div className={isExport ? 'flex flex-wrap gap-2' : 'flex flex-wrap gap-1.5'}>
-              {data.success.map((item, index) => (
-                <div
-                  key={`${item.tag}-${item.desc}-${index}`}
-                  className={
-                    isExport
-                      ? 'flex items-center gap-2 rounded-full px-3 py-1.5'
-                      : 'flex items-center gap-1.5 rounded-full px-2 py-1'
-                  }
-                  style={{ backgroundColor: '#eff6ff' }}
-                >
-                  <span
-                    className={isExport ? 'text-[11px] font-bold' : 'text-[9px] font-bold'}
-                    style={{ color: '#0ea5e9' }}
-                  >
-                    #{item.tag}
-                  </span>
-                  {item.desc ? (
-                    <span
-                      className={
-                        isExport
-                          ? 'text-[10px] leading-none'
-                          : 'text-[8px] leading-none'
-                      }
-                      style={{ color: '#6b7280' }}
-                    >
-                      {item.desc}
-                    </span>
-                  ) : null}
-                </div>
-              ))}
-            </div>
+          <div className="inline-flex w-36 flex-col items-start justify-start gap-1.5">
+            <MiniSection title="Problem" items={data.problem} compact />
+            <MiniSection
+              title="Current Solution"
+              items={data.correlationAnalysis}
+              compact
+            />
+            <SuccessSection items={data.success} />
           </div>
         </div>
       </div>
@@ -293,45 +225,86 @@ const CardLayout = ({ data, mode, cardRef }: CardLayoutWithRefProps) => {
 function MiniSection({
   title,
   items,
-  mode,
+  compact = false,
 }: {
   title: string
   items: string[]
-  mode: 'screen' | 'export'
+  compact?: boolean
 }) {
-  const isExport = mode === 'export'
-
   return (
-    <div className={isExport ? 'flex flex-col gap-1.5' : 'flex flex-col gap-1'}>
-      <div className={isExport ? 'flex flex-col gap-1' : 'flex flex-col gap-0.5'}>
+    <section className="flex w-full flex-col items-start justify-start gap-0.5">
+      <div className="flex w-full flex-col items-start justify-start gap-px">
         <h4
-          className={
-            isExport
-              ? 'text-[15px] leading-tight font-bold'
-              : 'text-[10px] leading-none font-bold'
-          }
+          className="text-[8.5px] font-bold leading-3"
           style={{ color: '#2563eb' }}
         >
           {title}
         </h4>
-        <div className="w-full" style={{ height: '1px', backgroundColor: '#d4d4d8' }} />
+        <div className="h-px w-full" style={{ backgroundColor: '#a1a1aa' }} />
       </div>
-      <div className={isExport ? 'flex flex-col gap-0.5' : 'flex flex-col gap-0'}>
-        {items.map((item, index) => (
-          <p
-            key={`${title}-${index}-${item}`}
-            className={
-              isExport
-                ? 'text-[13px] leading-[1.55] font-medium'
-                : 'text-[9px] leading-[1.45] font-medium'
-            }
-            style={{ color: '#3f3f46' }}
+      <div
+        className={
+          compact
+            ? 'w-full text-[6.5px] font-semibold leading-[8.5px]'
+            : 'flex w-full flex-col items-start justify-start text-[7px] font-semibold leading-[9px]'
+        }
+        style={{ color: '#3f3f46' }}
+      >
+        {items.slice(0, 4).map((item, index) =>
+          compact ? (
+            <span key={`${title}-${index}-${item}`}>
+              • {item}
+              {index < Math.min(items.length, 4) - 1 ? <br /> : null}
+            </span>
+          ) : (
+            <span key={`${title}-${index}-${item}`}>• {item}</span>
+          )
+        )}
+      </div>
+    </section>
+  )
+}
+
+function SuccessSection({ items }: { items: SuccessItem[] }) {
+  return (
+    <section className="flex w-full flex-col items-start justify-start gap-0.5">
+      <div className="flex w-full flex-col items-start justify-start gap-px">
+        <h4
+          className="text-center text-[8px] font-bold leading-3"
+          style={{ color: '#2563eb' }}
+        >
+          Success
+        </h4>
+        <div className="h-px w-full" style={{ backgroundColor: '#a1a1aa' }} />
+      </div>
+
+      {items.slice(0, 3).map((item, index) => (
+        <div
+          key={`${item.tag}-${item.desc}-${index}`}
+          className="inline-flex w-full items-center justify-start gap-[3px]"
+        >
+          <div
+            className="flex h-2.5 items-center justify-center rounded-[54.5px] px-1"
+            style={{ backgroundColor: '#dbeafe' }}
           >
-            • {item}
-          </p>
-        ))}
-      </div>
-    </div>
+            <span
+              className="max-w-[58px] truncate text-center text-[4.5px] font-medium leading-[6px]"
+              style={{ color: '#0ea5e9' }}
+            >
+              #{item.tag}
+            </span>
+          </div>
+          {item.desc ? (
+            <span
+              className="flex-1 truncate text-[4.5px] font-medium leading-[6px]"
+              style={{ color: '#a1a1aa' }}
+            >
+              {item.desc}
+            </span>
+          ) : null}
+        </div>
+      ))}
+    </section>
   )
 }
 

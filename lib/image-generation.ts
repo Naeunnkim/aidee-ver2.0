@@ -2,6 +2,7 @@ export type GeneratedImageBlock = {
   images: string[]
   prompt: string
   model: string
+  purpose?: 'persona' | 'style_reference' | 'design' | 'thumbnail'
 }
 
 const DEFAULT_NANO_BANANA_MODEL = 'gemini-2.5-flash-image'
@@ -152,7 +153,7 @@ export async function generateNanoBananaImages({
   prompt: string
   count?: number
   model?: string
-}) {
+}): Promise<GeneratedImageBlock> {
   const resolvedModel = normalizeNanoBananaModel(model)
 
   const settledImages = await Promise.allSettled(

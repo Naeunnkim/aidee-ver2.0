@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
@@ -42,6 +43,7 @@ type ChatMessage = {
   stage_key?: StageKey
   generatedImages?: string[]
   generatedImagePrompt?: string | null
+  generatedImagePurpose?: GeneratedImageBlock['purpose'] | null
 }
 
 type ChatApiMessage = {
@@ -75,6 +77,7 @@ function normalizeAssistantMessage(message: ChatMessage) {
       content: cleanedText,
       generatedImages: imageBlock?.images ?? [],
       generatedImagePrompt: imageBlock?.prompt ?? null,
+      generatedImagePurpose: imageBlock?.purpose ?? null,
     } satisfies ChatMessage,
     imageBlock,
     rfpJson,
@@ -109,7 +112,7 @@ function parsePersonaData(content: string) {
       'Correlation\\s*Analysis',
     ],
     ['D\\.\\s*Problem', '4\\.\\s*Problem', 'Problem'],
-    ['Success'],
+    ['E\\.\\s*Success', '5\\.\\s*Success', 'Success'],
     ['F\\.\\s*Decision', '5\\.\\s*Decision', 'Decision'],
   ]
 
@@ -123,6 +126,17 @@ function parsePersonaData(content: string) {
 
   const isPersonaNoiseLine = (line: string) =>
     /^\[?(리서치 진행|페르소나 수정|이대로 진행|조정하기|저장하기)\]?$/.test(
+      line
+    ) ||
+    /^선택지\s*:?\s*$/.test(line) ||
+    /^(?:A|B|C)\.\s*(?:리서치 진행|페르소나 수정|다시 정리)\s*$/.test(
+      line
+    ) ||
+    /^(?:A|B|C)\.\s*.+선택 시\s*:?\s*$/.test(line) ||
+    /^(?:A|B|C|D|E|F)\.\s*(?:User|Behavior Map|Correlation Analysis|Problem|Success|Decision)$/i.test(
+      line
+    ) ||
+    /^(?:페르소나 확정|확정 정보만으로 리서치 수행|리서치 출력 완료 이후 다음 STEP으로 이동|STEP 2로 복귀|필요한 항목만 재질문|수정 반영 후 카드 재출력|동일 질문 1개 재수행|현재 정보만 한 번 더 요약|추가 질문 1개만 이어서 수행)$/.test(
       line
     ) ||
     /이미지를 생성했습니다|아래 시안|수정 방향|페르소나의 프로필|카드 블록 종료/.test(
@@ -238,8 +252,14 @@ function parsePersonaData(content: string) {
     return []
   }
 
-  const successLines = extractSection(['Success'])
-  const genericSuccessLabels = new Set(['핵심가치', '기대효과', '기대효과2'])
+  const successLines = extractSection(['E\\.\\s*Success', '5\\.\\s*Success', 'Success'])
+  const genericSuccessLabels = new Set([
+    'E. Success',
+    'Success',
+    '핵심가치',
+    '기대효과',
+    '기대효과2',
+  ])
   const successData = successLines
     .map((line, index, lines) => {
       if (line.startsWith('#')) {
@@ -262,8 +282,11 @@ function parsePersonaData(content: string) {
         return null
       }
 
-      const [tag, ...descParts] = line.split('→').map((s) => s.trim())
-      const normalizedTag = tag.replace(/^#/, '').trim()
+      const [tag, ...descParts] = line.split(/→|:/).map((s) => s.trim())
+      const normalizedTag = tag
+        .replace(/^#/, '')
+        .replace(/^[-•]\s*/, '')
+        .trim()
       const desc = descParts.join(' ')
 
       if (genericSuccessLabels.has(normalizedTag)) {
@@ -573,27 +596,6 @@ function CompanyRecommendationsPanel({
   )
 }
 
-function StageAdvanceButton({
-  label,
-  onClick,
-  disabled,
-}: {
-  label: string
-  onClick: () => void
-  disabled?: boolean
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-medium text-blue-600 shadow-sm outline outline-1 outline-gray-200 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-    >
-      {label}
-    </button>
-  )
-}
-
 function RfpActionPanel({
   isDownloadingRfp,
   isLoading,
@@ -666,6 +668,7 @@ export default function ChatPage({
     (expert) => expert.key !== 'aidee'
   )
   const uiStageKey = pendingNextStageKey ?? currentStageKey
+  const activeSidebarIndex = getSidebarStepIndex(uiStageKey)
   const currentStageExperts = getStageExperts(uiStageKey)
   const scrollToSidebarStep = useCallback((sidebarIndex: number) => {
     setFocusedSidebarIndex(sidebarIndex)
@@ -1006,7 +1009,8 @@ export default function ChatPage({
           .find((message) => message.rfpJson)?.rfpJson
         const latestImageBlockFromHistory = [...normalizedMessages]
           .reverse()
-          .find((message) => message.imageBlock)?.imageBlock
+          .find((message) => message.imageBlock && message.imageBlock.purpose !== 'persona')
+          ?.imageBlock
 
         if (latestRfpFromHistory) {
           setLatestRfpJson(latestRfpFromHistory)
@@ -1111,7 +1115,7 @@ export default function ChatPage({
               stage_key: responseStageKey,
             })
 
-          if (imageBlock) {
+          if (imageBlock && imageBlock.purpose !== 'persona') {
             setLatestGeneratedImageBlock(imageBlock)
             await saveProjectThumbnailFromImageBlock(imageBlock)
           }
@@ -1336,7 +1340,7 @@ export default function ChatPage({
       setLatestRfpJson(rfpJson)
     }
 
-    if (imageBlock) {
+    if (imageBlock && imageBlock.purpose !== 'persona') {
       setLatestGeneratedImageBlock(imageBlock)
       await saveProjectThumbnailFromImageBlock(imageBlock)
     }
@@ -1629,7 +1633,15 @@ export default function ChatPage({
           <div className="flex flex-col gap-8">
             <div className="flex w-60 items-center justify-between">
               <Link href="/" className="inline-block transition-opacity hover:opacity-80">
-                <div className="h-5 w-14 rounded-full bg-gradient-to-r from-sky-500 to-blue-700" />
+                <Image
+                  src="/brand/aidee-logo-blue.svg"
+                  alt="Aidee"
+                  width={115}
+                  height={40}
+                  unoptimized
+                  priority
+                  className="h-7 w-auto"
+                />
               </Link>
               <div className="h-5 w-24" />
               <form action="/auth/logout" method="post">
@@ -1649,7 +1661,7 @@ export default function ChatPage({
               <div className="inline-flex items-start gap-1.5">
                 <div className="inline-flex w-2.5 flex-col items-start">
                   {SIDEBAR_STEPS.map((_, index) => {
-                    const isFocused = index === focusedSidebarIndex
+                    const isActive = index === activeSidebarIndex
                     const isLast = index === SIDEBAR_STEPS.length - 1
 
                     return (
@@ -1662,7 +1674,7 @@ export default function ChatPage({
                         ) : null}
                         <div
                           className={`h-2.5 w-2.5 rounded-full ${
-                            isFocused
+                            isActive
                               ? 'border-2 border-blue-600 bg-white'
                               : 'bg-gray-200'
                           }`}
@@ -1676,21 +1688,21 @@ export default function ChatPage({
                 </div>
                 <div className="inline-flex w-56 flex-col items-start">
                   {SIDEBAR_STEPS.map((step, index) => {
-                    const isFocused = index === focusedSidebarIndex
+                    const isActive = index === activeSidebarIndex
                     return (
                       <button
                         key={step}
                         type="button"
                         onClick={() => scrollToSidebarStep(index)}
                         className={`inline-flex self-stretch items-center gap-2 rounded-xl py-1.5 text-left transition ${
-                          isFocused
+                          isActive
                             ? 'bg-blue-50/70'
                             : 'hover:bg-gray-50'
                         }`}
                       >
                         <div
                           className={`text-sm leading-6 font-medium ${
-                            isFocused ? 'text-blue-600' : 'text-gray-300'
+                            isActive ? 'text-blue-600' : 'text-gray-300'
                           }`}
                         >
                           {step}
@@ -1812,23 +1824,23 @@ export default function ChatPage({
               m.role === 'assistant' &&
               (m.content.includes('# 제품 제안요청서') ||
                 m.content.includes('## 1. 프로젝트 개요'))
-            const canShowAdvanceButton =
-              m.role === 'assistant' &&
-              m.id === latestAideeAssistantId &&
-              Boolean(pendingNextStageKey) &&
-              pendingNextStageKey !== currentStageKey
 
             if (isPersonaCard) {
               const personaData = parsePersonaData(m.content)
 
               if (personaData) {
+                const personaCardData = {
+                  ...personaData,
+                  imageUrl: personaData.imageUrl || m.generatedImages?.[0] || '',
+                }
+
                 return (
                   <div key={m.id} className="space-y-6">
                     {shouldShowStageDivider ? (
                       <StageDivider stageKey={stageKeyForMessage} />
                     ) : null}
                     <PersonaCard
-                      data={personaData}
+                      data={personaCardData}
                       onProceed={() => sendPersonaAction('리서치 진행')}
                       onAdjust={() => sendPersonaAction('페르소나 수정')}
                     />
@@ -1969,15 +1981,6 @@ export default function ChatPage({
                     onDownload={() => void handleRfpDownload()}
                     onCompanyConnect={() => void requestNextStage()}
                   />
-                ) : null}
-                {canShowAdvanceButton ? (
-                  <div className="mt-3 flex items-center gap-2">
-                    <StageAdvanceButton
-                      label="다음 단계로 넘어가기"
-                      onClick={() => void requestNextStage()}
-                      disabled={isLoading}
-                    />
-                  </div>
                 ) : null}
                 {m.role === 'assistant' &&
                 (!m.active_agent || m.active_agent === 'aidee') &&

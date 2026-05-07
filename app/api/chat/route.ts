@@ -428,6 +428,52 @@ function buildCompactStyleReferencePrompt({
   ].join('\n')
 }
 
+function isPersonaCardText(text: string) {
+  return (
+    text.includes('Persona Card') ||
+    (text.includes('User') &&
+      text.includes('Behavior Map') &&
+      text.includes('Problem') &&
+      text.includes('Decision'))
+  )
+}
+
+function buildPersonaImagePrompt({
+  project,
+  personaText,
+}: {
+  project: ProjectRecord | null
+  personaText: string
+}) {
+  const projectRequirements = truncateText(
+    JSON.stringify(project?.requirements ?? {}, null, 2),
+    1200
+  )
+  const personaSnippet = truncateText(personaText, 2600)
+
+  return [
+    'Create one realistic persona profile image for a product design persona card.',
+    '',
+    `Project title: ${project?.title || 'Untitled project'}`,
+    '',
+    'Project requirements:',
+    projectRequirements,
+    '',
+    'Persona card text:',
+    personaSnippet,
+    '',
+    'Image direction:',
+    '- infer visible persona traits only from the persona card text: gender if explicit, approximate adult age range, occupation/lifestyle, and target-user characteristics',
+    '- if gender or exact age is not explicit, use a natural gender-neutral adult representation',
+    '- if the persona seems younger than 20, represent the target as a young adult in their 20s; do not depict minors',
+    '- create a single waist-up portrait or lifestyle portrait suitable for the left image area of a persona card',
+    '- clean modern editorial style, realistic but not a celebrity, natural expression',
+    '- simple background related subtly to the persona lifestyle or product context',
+    '- vertical composition, subject centered, enough negative space, high quality',
+    '- no text, no labels, no UI, no watermark, no collage',
+  ].join('\n')
+}
+
 async function generateStyleReferenceImages({
   project,
   referenceImages,
@@ -479,6 +525,7 @@ async function generateStyleReferenceImages({
         prompt: attempt.prompt,
         count: attempt.count,
       })
+      payload.purpose = 'style_reference'
 
       console.log('[style-images] attempt success', {
         label: attempt.label,
@@ -744,6 +791,23 @@ function normalizeChoiceFormatting(text: string) {
         )
       }
 
+      const looksLikeStepLine = (line: string) =>
+        /^\s*(?:STEP\s*)?[1-6][.)]\s+/.test(line) ||
+        /^\s*[1-6][.)]\s*(?:제품 아이디어|사용자 명확화|디자인\/개발|스타일 컨셉|디자인 제안|평가 및 RFP)/.test(
+          line
+        )
+
+      const convertAlphabeticStepLine = (line: string) =>
+        line
+          .replace(/^\s*(?:A|a)[.)]\s*(제품 아이디어)/, '1. $1')
+          .replace(/^\s*(?:B|b)[.)]\s*(사용자 명확화)/, '2. $1')
+          .replace(/^\s*(?:C|c)[.)]\s*(디자인\/개발)/, '3. $1')
+
+      const looksLikeAlphabeticStepLine = (line: string) =>
+        /^\s*(?:A|a)[.)]\s*제품 아이디어/.test(line) ||
+        /^\s*(?:B|b)[.)]\s*사용자 명확화/.test(line) ||
+        /^\s*(?:C|c)[.)]\s*디자인\/개발/.test(line)
+
       const convertIndexedChoice = (line: string) =>
         line
           .replace(/^\s*(?:1|①)[.)]\s+/, 'A. ')
@@ -777,6 +841,32 @@ function normalizeChoiceFormatting(text: string) {
         const previousNonEmptyLine = [...lines.slice(0, index)]
           .reverse()
           .find((candidate) => candidate.trim().length > 0)
+
+        if (
+          !inChoiceBlock &&
+          !(
+            previousNonEmptyLine &&
+            looksLikeChoicePrompt(previousNonEmptyLine)
+          ) &&
+          looksLikeStepLine(trimmed)
+        ) {
+          inChoiceBlock = false
+          choiceIndex = 0
+          return line
+        }
+
+        if (
+          !inChoiceBlock &&
+          !(
+            previousNonEmptyLine &&
+            looksLikeChoicePrompt(previousNonEmptyLine)
+          ) &&
+          looksLikeAlphabeticStepLine(trimmed)
+        ) {
+          inChoiceBlock = false
+          choiceIndex = 0
+          return convertAlphabeticStepLine(line)
+        }
 
         if (looksLikeChoicePrompt(line)) {
           inChoiceBlock = true
@@ -817,7 +907,7 @@ function normalizeChoiceFormatting(text: string) {
 
         inChoiceBlock = false
         choiceIndex = 0
-        return convertIndexedChoice(line)
+        return line
       })
 
       return normalizedLines.join('\n')
@@ -926,8 +1016,6 @@ function inferStageTransitionFromText({
   text: string
 }): StageMeta | null {
   const transitionHints = [
-    /다음 단계 진행은 UI 버튼/i,
-    /다음 단계로 넘어가기/i,
     /다음 단계로 진행/i,
     /다음 단계로 이어/i,
     /이 단계는 여기까지/i,
@@ -956,6 +1044,43 @@ function inferStageTransitionFromText({
     transition: true,
     reason: 'stage_complete',
   }
+}
+
+function inferCurrentStageFromText(text: string): StageKey | null {
+  const currentStagePatterns: Array<[RegExp, StageKey]> = [
+    [
+      /(?:지금|현재|이제|오늘)\s*(?:은|부터)?\s*STEP\s*1(?:\s|\.|:|입니다|단계)/i,
+      'step_1_idea',
+    ],
+    [
+      /(?:지금|현재|이제|오늘)\s*(?:은|부터)?\s*STEP\s*2(?:\s|\.|:|입니다|단계)/i,
+      'step_2_persona',
+    ],
+    [
+      /(?:지금|현재|이제|오늘)\s*(?:은|부터)?\s*STEP\s*3(?:\s|\.|:|입니다|단계)/i,
+      'step_3_direction',
+    ],
+    [
+      /(?:지금|현재|이제|오늘)\s*(?:은|부터)?\s*STEP\s*4(?:\s|\.|:|입니다|단계)/i,
+      'step_4_style',
+    ],
+    [
+      /(?:지금|현재|이제|오늘)\s*(?:은|부터)?\s*STEP\s*5(?:\s|\.|:|입니다|단계)/i,
+      'step_5_design',
+    ],
+    [
+      /(?:지금|현재|이제|오늘)\s*(?:은|부터)?\s*STEP\s*6(?:\s|\.|:|입니다|단계)/i,
+      'step_6_rfp',
+    ],
+    [/STEP\s*3(?:으로|에)\s*(?:넘어왔|진입|들어왔|이동)/i, 'step_3_direction'],
+    [/STEP\s*4(?:으로|에)\s*(?:넘어왔|진입|들어왔|이동)/i, 'step_4_style'],
+    [/STEP\s*5(?:으로|에)\s*(?:넘어왔|진입|들어왔|이동)/i, 'step_5_design'],
+    [/STEP\s*6(?:으로|에)\s*(?:넘어왔|진입|들어왔|이동)/i, 'step_6_rfp'],
+  ]
+
+  return (
+    currentStagePatterns.find(([pattern]) => pattern.test(text))?.[1] ?? null
+  )
 }
 
 export async function POST(req: Request) {
@@ -1188,6 +1313,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
                     count,
                     model,
                   })
+                  generatedImagePayload.purpose = 'design'
 
                   return {
                     status: 'success',
@@ -1251,6 +1377,26 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
 
     if (
       !generatedImagePayload &&
+      !expertCall &&
+      currentStageKey === 'step_2_persona' &&
+      isPersonaCardText(finalText)
+    ) {
+      try {
+        generatedImagePayload = await generateNanoBananaImages({
+          prompt: buildPersonaImagePrompt({
+            project,
+            personaText: finalText,
+          }),
+          count: 1,
+        })
+        generatedImagePayload.purpose = 'persona'
+      } catch (error) {
+        console.error('Persona image generation failed:', error)
+      }
+    }
+
+    if (
+      !generatedImagePayload &&
       canGenerateImages &&
       isImageGenerationRequest(lastUserMessage)
     ) {
@@ -1263,6 +1409,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
           }),
           count: extractRequestedImageCount(lastUserMessage),
         })
+        generatedImagePayload.purpose = 'design'
 
         if (!finalText.trim()) {
           finalText =
@@ -1349,8 +1496,19 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
       currentStageKey: stageMeta.currentStageKey,
       text: finalText,
     })
+    const inferredCurrentStageKey = inferCurrentStageFromText(finalText)
 
-    if (inferredStageMeta) {
+    if (
+      inferredCurrentStageKey &&
+      inferredCurrentStageKey !== stageMeta.currentStageKey
+    ) {
+      stageMeta = {
+        currentStageKey: inferredCurrentStageKey,
+        nextStageKey: inferredCurrentStageKey,
+        transition: false,
+        reason: 'explicit_current_stage_text',
+      }
+    } else if (inferredStageMeta) {
       stageMeta = inferredStageMeta
     }
 

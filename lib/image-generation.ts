@@ -5,11 +5,17 @@ export type GeneratedImageBlock = {
   purpose?: 'persona' | 'style_reference' | 'design' | 'thumbnail'
 }
 
-const DEFAULT_NANO_BANANA_MODEL = 'gemini-3.1-flash-image-preview'
+const DEFAULT_NANO_BANANA_MODEL = 'gemini-2.5-flash-image'
 
 const NANO_BANANA_MODEL_ALIASES: Record<string, string> = {
   'gemini-2.5-flash-image-preview': 'gemini-2.5-flash-image',
 }
+
+const NANO_BANANA_MODEL_FALLBACKS = [
+  DEFAULT_NANO_BANANA_MODEL,
+  'gemini-3.1-flash-image-preview',
+  'gemini-2.0-flash-preview-image-generation',
+]
 
 function normalizeNanoBananaModel(model: string) {
   return NANO_BANANA_MODEL_ALIASES[model] ?? model
@@ -118,21 +124,28 @@ async function generateSingleNanobananaImage({
 
   const images = candidateParts
     .map((part: unknown) => {
+      const inlineData =
+        typeof part === 'object' && part && 'inlineData' in part
+          ? part.inlineData
+          : typeof part === 'object' && part && 'inline_data' in part
+            ? part.inline_data
+            : null
+
       if (
-        typeof part === 'object' &&
-        part &&
-        'inlineData' in part &&
-        typeof part.inlineData === 'object' &&
-        part.inlineData &&
-        'data' in part.inlineData &&
-        typeof part.inlineData.data === 'string'
+        typeof inlineData === 'object' &&
+        inlineData &&
+        'data' in inlineData &&
+        typeof inlineData.data === 'string'
       ) {
         const mimeType =
-          'mimeType' in part.inlineData && typeof part.inlineData.mimeType === 'string'
-            ? part.inlineData.mimeType
+          'mimeType' in inlineData && typeof inlineData.mimeType === 'string'
+            ? inlineData.mimeType
+            : 'mime_type' in inlineData &&
+                typeof inlineData.mime_type === 'string'
+              ? inlineData.mime_type
             : 'image/png'
 
-        return `data:${mimeType};base64,${part.inlineData.data}`
+        return `data:${mimeType};base64,${inlineData.data}`
       }
 
       return null
@@ -156,32 +169,64 @@ export async function generateNanoBananaImages({
   count?: number
   model?: string
 }): Promise<GeneratedImageBlock> {
-  const resolvedModel = normalizeNanoBananaModel(model)
+  const preferredModel = normalizeNanoBananaModel(model)
+  const modelCandidates = [
+    preferredModel,
+    ...NANO_BANANA_MODEL_FALLBACKS.filter((candidate) => candidate !== preferredModel),
+  ]
 
-  const settledImages = await Promise.allSettled(
-    Array.from({ length: count }, (_, index) =>
-      generateSingleNanobananaImage({
-        prompt: buildNanobananaPrompt({ prompt, count, index }),
+  let lastError: unknown = null
+  let bestPartialResult: GeneratedImageBlock | null = null
+
+  for (const resolvedModel of modelCandidates) {
+    const images: string[] = []
+
+    for (let index = 0; index < count; index += 1) {
+      try {
+        const image = await generateSingleNanobananaImage({
+          prompt: buildNanobananaPrompt({ prompt, count, index }),
+          model: resolvedModel,
+        })
+        images.push(image)
+      } catch (error) {
+        lastError = error
+        console.error('[nanobanana] single image attempt failed', {
+          model: resolvedModel,
+          index,
+          error,
+        })
+      }
+    }
+
+    if (images.length >= count || (count === 1 && images.length > 0)) {
+      return {
+        images,
+        prompt,
         model: resolvedModel,
-      })
-    )
-  )
+      } satisfies GeneratedImageBlock
+    }
 
-  const images = settledImages
-    .filter((result): result is PromiseFulfilledResult<string> => {
-      return result.status === 'fulfilled'
-    })
-    .map((result) => result.value)
-
-  if (images.length === 0) {
-    throw new Error('Nano Banana returned no generated images')
+    if (
+      images.length > 0 &&
+      (!bestPartialResult || images.length > bestPartialResult.images.length)
+    ) {
+      bestPartialResult = {
+        images,
+        prompt,
+        model: resolvedModel,
+      }
+    }
   }
 
-  return {
-    images,
-    prompt,
-    model: resolvedModel,
-  } satisfies GeneratedImageBlock
+  if (bestPartialResult) {
+    return bestPartialResult
+  }
+
+  throw new Error(
+    lastError instanceof Error
+      ? `Nano Banana returned no generated images: ${lastError.message}`
+      : 'Nano Banana returned no generated images'
+  )
 }
 
 export function appendGeneratedImagesBlock({

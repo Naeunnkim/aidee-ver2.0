@@ -107,7 +107,10 @@ function hasNanoBananaPlaceholder(text: string) {
   return (
     /\[\s*\/?\s*Nano Banana\s*이미지\s*생성\s*요청\s*\]/i.test(text) ||
     /Generating\s+[1-4]\s+images?\s+based\s+on/i.test(text) ||
-    /잠시\s*후\s*이미지가\s*생성됩니다/i.test(text)
+    /잠시\s*후\s*이미지가\s*생성됩니다/i.test(text) ||
+    /\(?\s*이미지\s*[1-4]\s*placeholder\s*\)?/i.test(text) ||
+    /\(?\s*image\s*[1-4]\s*placeholder\s*\)?/i.test(text) ||
+    /placeholder/i.test(text)
   )
 }
 
@@ -589,6 +592,7 @@ async function generateStyleReferenceImages({
       count: 3,
     },
   ]
+  let bestPartialPayload: GeneratedImageBlock | null = null
 
   for (const attempt of attempts) {
     console.log('[style-images] attempt start', {
@@ -616,6 +620,14 @@ async function generateStyleReferenceImages({
         return payload
       }
 
+      if (
+        payload.images.length > 0 &&
+        (!bestPartialPayload ||
+          payload.images.length > bestPartialPayload.images.length)
+      ) {
+        bestPartialPayload = payload
+      }
+
       console.warn('[style-images] partial result ignored', {
         label: attempt.label,
         imageCount: payload.images.length,
@@ -628,7 +640,7 @@ async function generateStyleReferenceImages({
     }
   }
 
-  return null
+  return bestPartialPayload
 }
 
 function hasStyleReferenceSelection(text: string) {
@@ -877,8 +889,13 @@ function sanitizeAssistantText(text: string) {
     /Generating\s+[1-4]\s+images?\s+based\s+on/i,
     /잠시\s*후\s*이미지가\s*생성됩니다/i,
     /^프롬프트\s*:/i,
+    /^prompt\s*:/i,
     /^\(?이미지\s*생성\s*중\.\.\.\)?$/i,
+    /^\(?image\s*generation\s*in\s*progress\.\.\.\)?$/i,
+    /\(?\s*이미지\s*[1-4]\s*placeholder\s*\)?/i,
+    /\(?\s*image\s*[1-4]\s*placeholder\s*\)?/i,
     /이미지\s*placeholder/i,
+    /image\s*placeholder/i,
     /페르소나\s*이미지가\s*생성되었습니다/i,
     /<<AIDEE_STAGE>>[\s\S]*?<<\/AIDEE_STAGE>>/i,
   ]
@@ -1577,7 +1594,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
                       'gemini-2.5-flash-image',
                       'gemini-3.1-flash-image-preview',
                     ])
-                    .default('gemini-3.1-flash-image-preview')
+                    .default('gemini-2.5-flash-image')
                     .describe('Nano Banana model to use'),
                 }),
                 execute: async ({ prompt, count, model }) => {
@@ -1728,6 +1745,12 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
       } else if (modelPrintedNanoBananaPlaceholder) {
         finalText =
           '스타일 레퍼런스 이미지를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.'
+        stageMeta = {
+          currentStageKey: 'step_4_style',
+          nextStageKey: 'step_4_style',
+          transition: false,
+          reason: 'style_reference_image_generation_failed',
+        }
       } else if (!finalText.trim()) {
         finalText =
           '스타일 레퍼런스 이미지를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.'

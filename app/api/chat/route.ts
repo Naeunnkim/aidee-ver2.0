@@ -108,6 +108,8 @@ function hasNanoBananaPlaceholder(text: string) {
     /\[\s*\/?\s*Nano Banana\s*이미지\s*생성\s*요청\s*\]/i.test(text) ||
     /Generating\s+[1-4]\s+images?\s+based\s+on/i.test(text) ||
     /잠시\s*후\s*이미지가\s*생성됩니다/i.test(text) ||
+    /잠시(?:만)?\s*(?:기다려|기다려\s*주세요|기다려주세요)/i.test(text) ||
+    /곧\s*(?:이미지|시안|렌더).*(?:생성|준비)/i.test(text) ||
     /\(?\s*이미지\s*[1-4]\s*placeholder\s*\)?/i.test(text) ||
     /\(?\s*image\s*[1-4]\s*placeholder\s*\)?/i.test(text) ||
     /placeholder/i.test(text)
@@ -703,6 +705,18 @@ function isCompanyConnectionRequest(text: string) {
   return /협력\s*업체|업체\s*연결|업체\s*추천|파트너|vendor|company/i.test(text)
 }
 
+function modelPromisedRfpWithoutDocument(text: string) {
+  return (
+    /RFP|제안요청서|문서\s*생성/i.test(text) &&
+    (/잠시(?:만)?\s*(?:기다려|기다려\s*주세요|기다려주세요)/i.test(text) ||
+      /생성\s*중/i.test(text) ||
+      /생성해\s*드리겠습니다/i.test(text) ||
+      /넘어가겠습니다/i.test(text)) &&
+    !text.includes('# 제품 제안요청서') &&
+    !text.includes('## 1. 프로젝트 개요')
+  )
+}
+
 function resolveIntentStageKey({
   currentStageKey,
   lastUserMessage,
@@ -891,6 +905,8 @@ function sanitizeAssistantText(text: string) {
     /\[\s*\/?\s*Nano Banana\s*이미지\s*생성\s*요청\s*\]/i,
     /Generating\s+[1-4]\s+images?\s+based\s+on/i,
     /잠시\s*후\s*이미지가\s*생성됩니다/i,
+    /잠시(?:만)?\s*(?:기다려|기다려\s*주세요|기다려주세요)/i,
+    /곧\s*(?:이미지|시안|렌더).*(?:생성|준비)/i,
     /^프롬프트\s*:/i,
     /^prompt\s*:/i,
     /^\(?이미지\s*생성\s*중\.\.\.\)?$/i,
@@ -1114,6 +1130,100 @@ function formatRfpMarkdown(rfp: RfpDocument) {
     '## 8. 다음 액션',
     ...rfp.nextActions.map((item) => `- ${item}`),
   ].join('\n')
+}
+
+function buildFallbackRfpDocument({
+  project,
+  referenceImages,
+}: {
+  project: ProjectRecord | null
+  referenceImages: ReferenceImageRecord[]
+}): RfpDocument {
+  const requirements = project?.requirements ?? {}
+  const requirementText = JSON.stringify(requirements, null, 2)
+  const referenceSummary =
+    buildReferenceContext(referenceImages) || '레퍼런스 이미지 분석 결과 없음'
+  const projectName = project?.title || '제목 없음'
+
+  return {
+    projectName,
+    oneLineDefinition: `${projectName}의 제품화 방향을 정리한 디자인 RFP`,
+    projectGoal:
+      requirementText.length > 5
+        ? '대화에서 확정된 요구사항을 기준으로 제품 디자인과 제작 범위를 명확히 정의'
+        : '제품 아이디어를 실행 가능한 디자인 및 제작 요청사항으로 구체화',
+    finalPurpose: '디자인 고도화, 시제품 제작, 협력업체 커뮤니케이션 기준 문서',
+    mainTarget: '대화에서 정의한 핵심 사용자 및 사용 맥락',
+    usageContext: '사용자가 제품 필요성을 느끼는 주요 일상 상황',
+    coreNeeds: '기존 대안으로 충분히 해결되지 않은 사용 불편과 욕구',
+    coreValue: '사용자 경험 개선과 제품 차별성 확보',
+    styleKeywords: ['정돈된 사용성', '일관된 디자인 언어', '제작 가능성'],
+    avoidDirections: ['확정되지 않은 기능 과잉', '제작 난이도를 높이는 불필요한 장식'],
+    mustHaveFeatures: ['핵심 사용 상황을 해결하는 기본 기능', '선택된 디자인 방향을 반영한 형태와 재질'],
+    niceToHaveFeatures: ['브랜드 확장에 활용 가능한 디테일', '사용 편의성을 높이는 부가 기능'],
+    excludedFeatures: ['현재 RFP 범위를 벗어난 고위험 기능'],
+    budgetRange: '협력업체 견적 산정 필요',
+    timeline: '협력업체 협의 후 확정',
+    sizeOrForm: '선택된 디자인 시안과 사용 환경을 기준으로 상세화',
+    implementationNotes: ['초기 시제품 단계에서 구조 안정성과 제작 공정을 우선 검토'],
+    referenceSummary: truncateText(referenceSummary, 500),
+    researchInsights: ['타겟 사용자의 실제 사용 맥락과 디자인 선호를 기준으로 제품 방향 설정'],
+    successCriteria: ['핵심 사용 문제 해결', '선택된 스타일 방향 반영', '시제품 제작 가능성 확보'],
+    nextActions: ['RFP 기반 협력업체 문의', '견적 및 제작 범위 확인', '시제품 제작 일정 협의'],
+  }
+}
+
+async function generateRfpResponse({
+  google,
+  project,
+  referenceImages,
+  messages,
+}: {
+  google: ReturnType<typeof createGoogleGenerativeAI>
+  project: ProjectRecord | null
+  referenceImages: ReferenceImageRecord[]
+  messages: ModelMessage[]
+}) {
+  const requirementsText = buildRequirementsText(project)
+  const referenceContext = buildReferenceContext(referenceImages)
+  const conversation = buildConversationText(messages)
+
+  let rfpDocument: RfpDocument
+
+  try {
+    const rfpObjectResult = await generateObject({
+      model: google('gemini-2.5-flash'),
+      schema: RFP_DOCUMENT_SCHEMA,
+      prompt: buildRfpObjectPrompt({
+        projectTitle: project?.title || '제목 없음',
+        requirements: requirementsText,
+        referenceContext,
+        conversation,
+      }),
+    })
+
+    rfpDocument = rfpObjectResult.object
+  } catch (error) {
+    console.error('RFP object generation failed, using fallback document:', error)
+    rfpDocument = buildFallbackRfpDocument({ project, referenceImages })
+  }
+
+  const markdown = formatRfpMarkdown(rfpDocument)
+  const finalText = `${markdown}
+
+<<AIDEE_RFP_JSON>>
+${JSON.stringify(rfpDocument, null, 2)}
+<</AIDEE_RFP_JSON>>`
+
+  return new Response(finalText, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'x-aidee-current-stage': 'step_6_rfp',
+      'x-aidee-next-stage': 'step_6_company',
+      'x-aidee-transition': 'yes',
+      'x-aidee-reason': 'rfp_completed',
+    },
+  })
 }
 
 function parseStageMeta(text: string, fallbackStageKey: StageKey) {
@@ -1341,36 +1451,11 @@ export async function POST(req: Request) {
 
     if (currentStageKey === 'step_6_rfp') {
       try {
-        const requirementsText = buildRequirementsText(project)
-        const referenceContext = buildReferenceContext(referenceImages)
-        const conversation = buildConversationText(messages)
-
-        const rfpObjectResult = await generateObject({
-          model: google('gemini-2.5-flash'),
-          schema: RFP_DOCUMENT_SCHEMA,
-          prompt: buildRfpObjectPrompt({
-            projectTitle: project?.title || '제목 없음',
-            requirements: requirementsText,
-            referenceContext,
-            conversation,
-          }),
-        })
-
-        const markdown = formatRfpMarkdown(rfpObjectResult.object)
-        const finalText = `${markdown}
-
-<<AIDEE_RFP_JSON>>
-${JSON.stringify(rfpObjectResult.object, null, 2)}
-<</AIDEE_RFP_JSON>>`
-
-        return new Response(finalText, {
-          headers: {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'x-aidee-current-stage': 'step_6_rfp',
-            'x-aidee-next-stage': 'step_6_company',
-            'x-aidee-transition': 'yes',
-            'x-aidee-reason': 'rfp_completed',
-          },
+        return await generateRfpResponse({
+          google,
+          project,
+          referenceImages,
+          messages,
         })
       } catch (error) {
         console.error('RFP structured generation failed:', error)
@@ -1680,6 +1765,11 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
       /(?:이미지|시안|렌더).*(?:생성|제작|만들|아래|확인)|(?:생성|제작|만들).*(?:이미지|시안|렌더)|(?:시안|디자인)\s*[1-3]\s*(?:안|번)|[1-3]\s*안\s*[:：]|디자인\s*의도|형태\s*[:：]|색감\s*[:：]|재질\s*[:：]/i.test(
         finalText
       )
+    const modelPromisedStyleReferencesWithoutImages =
+      !generatedImagePayload &&
+      /(?:스타일|컨셉|레퍼런스|무드).*(?:시안|이미지).*(?:3\s*(?:가지|개|장|안)|세\s*(?:가지|개|장|안))|(?:3\s*(?:가지|개|장|안)|세\s*(?:가지|개|장|안)).*(?:스타일|컨셉|레퍼런스|무드).*(?:시안|이미지)|아래\s*3\s*(?:가지|개|장|안).*(?:시안|스타일|이미지)|A\.\s*첫\s*번째[\s\S]*B\.\s*두\s*번째[\s\S]*C\.\s*세\s*번째/i.test(
+        finalText
+      )
 
     if (shouldBypassModelTextForStyleImages) {
       finalText = getStyleReferenceIntro(generatedImagePayload?.images.length ?? 3)
@@ -1745,7 +1835,8 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
       (currentStageKey === 'step_4_style' ||
         stageMeta.currentStageKey === 'step_4_style' ||
         stageMeta.nextStageKey === 'step_4_style' ||
-        modelPrintedNanoBananaPlaceholder)
+        modelPrintedNanoBananaPlaceholder ||
+        modelPromisedStyleReferencesWithoutImages)
 
     if (shouldGenerateStyleReferencesAfterModel) {
       generatedImagePayload = await generateStyleReferenceImages({
@@ -1757,7 +1848,10 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
 
       if (generatedImagePayload) {
         finalText = getStyleReferenceIntro(generatedImagePayload.images.length)
-      } else if (modelPrintedNanoBananaPlaceholder) {
+      } else if (
+        modelPrintedNanoBananaPlaceholder ||
+        modelPromisedStyleReferencesWithoutImages
+      ) {
         finalText =
           '스타일 레퍼런스 이미지를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.'
         stageMeta = {
@@ -1788,6 +1882,32 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
         text: finalText,
         payload: generatedImagePayload,
       })
+    }
+
+    if (
+      (stageMeta.currentStageKey === 'step_6_rfp' ||
+        stageMeta.nextStageKey === 'step_6_rfp' ||
+        modelPromisedRfpWithoutDocument(finalText)) &&
+      !generatedImagePayload
+    ) {
+      try {
+        return await generateRfpResponse({
+          google,
+          project,
+          referenceImages,
+          messages,
+        })
+      } catch (error) {
+        console.error('RFP structured generation failed:', error)
+        finalText =
+          'RFP 문서 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.'
+        stageMeta = {
+          currentStageKey: 'step_6_rfp',
+          nextStageKey: 'step_6_rfp',
+          transition: false,
+          reason: 'rfp_generation_failed',
+        }
+      }
     }
 
     const shouldGenerateRfpJson =

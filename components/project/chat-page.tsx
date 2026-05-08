@@ -2208,7 +2208,9 @@ export default function ChatPage({
             <StageDivider stageKey={currentStageKey} />
           ) : null}
 
-          {currentStageKey === 'step_6_company' && latestRfpContent ? (
+          {(currentStageKey === 'step_6_company' ||
+            pendingNextStageKey === 'step_6_company') &&
+          latestRfpContent ? (
             <CompanyRecommendationsPanel
               rfpJson={latestRfpJson}
               rfpContent={latestRfpContent}

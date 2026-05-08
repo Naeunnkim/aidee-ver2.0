@@ -51,6 +51,8 @@ type ChatApiMessage = {
   content: string
 }
 
+type ForceImageGeneration = 'initial_design' | 'design_revision'
+
 type StageTimelineItem = {
   stage_key: StageKey
   entered_at: string
@@ -1334,7 +1336,8 @@ export default function ChatPage({
     nextMessages: ChatMessage[],
     stageKeyForRequest: StageKey = currentStageKey,
     expertForRequest: ExpertKey = activeExpert,
-    expertCall = false
+    expertCall = false,
+    forceImageGeneration?: ForceImageGeneration
   ) => {
     setLoadingLabelOverride(
       isLikelyImageGenerationTurn({
@@ -1354,11 +1357,27 @@ export default function ChatPage({
         currentStageKey: stageKeyForRequest,
         activeExpert: expertForRequest,
         expertCall,
+        forceImageGeneration,
       }),
     })
 
     if (!response.ok) {
       const errorText = await response.text()
+      const aiMessageId = crypto.randomUUID()
+      const createdAt = new Date().toISOString()
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: aiMessageId,
+          role: 'assistant',
+          content:
+            errorText ||
+            '이미지 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+          active_agent: expertForRequest,
+          created_at: createdAt,
+          stage_key: stageKeyForRequest,
+        },
+      ])
       throw new Error(`Chat request failed: ${response.status} ${errorText}`)
     }
 
@@ -1370,7 +1389,7 @@ export default function ChatPage({
     const responseStageKey = getResponseStageKey(response, stageKeyForRequest)
     const decoder = new TextDecoder()
     let aiContent = ''
-    const aiMessageId = (Date.now() + 1).toString()
+    const aiMessageId = crypto.randomUUID()
     const createdAt = new Date().toISOString()
 
     setMessages((prev) => [
@@ -1679,7 +1698,13 @@ export default function ChatPage({
       })
 
       await transitionStage('step_5_design', 'style_reference_selected')
-      await streamAssistantResponse(nextMessages, 'step_5_design', 'aidee')
+      await streamAssistantResponse(
+        nextMessages,
+        'step_5_design',
+        'aidee',
+        false,
+        'initial_design'
+      )
     } catch (error) {
       console.error('Generated image selection failed:', error)
       setMessages((prev) => [

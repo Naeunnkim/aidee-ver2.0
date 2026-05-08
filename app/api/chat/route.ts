@@ -41,6 +41,7 @@ type ChatRequestBody = {
   currentStageKey?: StageKey
   activeExpert?: ExpertKey
   expertCall?: boolean
+  forceImageGeneration?: 'initial_design' | 'design_revision'
 }
 
 type NormalizedMessage = {
@@ -1201,6 +1202,7 @@ function inferCurrentStageFromText(text: string): StageKey | null {
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as ChatRequestBody
+    const forceImageGeneration = body.forceImageGeneration
 
     if (!Array.isArray(body?.messages)) {
       return new Response(
@@ -1358,12 +1360,14 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
     const shouldBypassModelTextForStyleImages = shouldGenerateStyleReferenceImages
 
     const shouldGenerateInitialDesignImages =
-      currentStageKey === 'step_5_design' &&
+      (forceImageGeneration === 'initial_design' ||
+        currentStageKey === 'step_5_design') &&
       !expertCall &&
       !hasGeneratedDesignImagesInMessages(messages) &&
       !hasDesignFinalSelection(lastUserMessage) &&
       !isDesignRevisionRequest(lastUserMessage) &&
-      (hasStyleReferenceSelection(lastUserMessage) ||
+      (forceImageGeneration === 'initial_design' ||
+        hasStyleReferenceSelection(lastUserMessage) ||
         isImageGenerationRequest(lastUserMessage) ||
         /다음\s*단계|진행|디자인\s*제안|STEP\s*5/i.test(lastUserMessage) ||
         requestedStageKey === 'step_4_style')
@@ -1419,10 +1423,12 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
     }
 
     const shouldGenerateDesignRevisionImage =
-      currentStageKey === 'step_5_design' &&
+      (forceImageGeneration === 'design_revision' ||
+        currentStageKey === 'step_5_design') &&
       !expertCall &&
       hasGeneratedDesignImagesInMessages(messages) &&
-      isDesignRevisionRequest(lastUserMessage) &&
+      (forceImageGeneration === 'design_revision' ||
+        isDesignRevisionRequest(lastUserMessage)) &&
       !hasDesignFinalSelection(lastUserMessage)
 
     if (shouldGenerateDesignRevisionImage) {

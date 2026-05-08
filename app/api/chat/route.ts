@@ -513,6 +513,18 @@ function isPersonaCardText(text: string) {
   )
 }
 
+function isPersonaImagePlaceholderText(text: string) {
+  return (
+    currentPersonaTextPattern.test(text) ||
+    /페르소나.*이미지|이미지.*페르소나|이미지\s*placeholder|프롬프트\s*:|\(이미지\s*생성\s*중/i.test(
+      text
+    )
+  )
+}
+
+const currentPersonaTextPattern =
+  /이\s*페르소나.*리서치|리서치를\s*진행할까요|페르소나.*수정할까요/i
+
 function buildPersonaImagePrompt({
   project,
   personaText,
@@ -864,6 +876,10 @@ function sanitizeAssistantText(text: string) {
     /\[\s*\/?\s*Nano Banana\s*이미지\s*생성\s*요청\s*\]/i,
     /Generating\s+[1-4]\s+images?\s+based\s+on/i,
     /잠시\s*후\s*이미지가\s*생성됩니다/i,
+    /^프롬프트\s*:/i,
+    /^\(?이미지\s*생성\s*중\.\.\.\)?$/i,
+    /이미지\s*placeholder/i,
+    /페르소나\s*이미지가\s*생성되었습니다/i,
     /<<AIDEE_STAGE>>[\s\S]*?<<\/AIDEE_STAGE>>/i,
   ]
 
@@ -1644,7 +1660,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
       !generatedImagePayload &&
       !expertCall &&
       currentStageKey === 'step_2_persona' &&
-      isPersonaCardText(finalText)
+      (isPersonaCardText(finalText) || isPersonaImagePlaceholderText(cleanedText))
     ) {
       try {
         generatedImagePayload = await generateNanoBananaImages({

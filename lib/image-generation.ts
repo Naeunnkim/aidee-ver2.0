@@ -5,11 +5,10 @@ export type GeneratedImageBlock = {
   purpose?: 'persona' | 'style_reference' | 'design' | 'thumbnail'
 }
 
-const DEFAULT_NANO_BANANA_MODEL = 'gemini-2.5-flash-image'
+const DEFAULT_NANO_BANANA_MODEL = 'gemini-3.1-flash-image-preview'
 
 const NANO_BANANA_MODEL_ALIASES: Record<string, string> = {
-  'gemini-2.5-flash-image-preview': DEFAULT_NANO_BANANA_MODEL,
-  'gemini-3.1-flash-image-preview': DEFAULT_NANO_BANANA_MODEL,
+  'gemini-2.5-flash-image-preview': 'gemini-2.5-flash-image',
 }
 
 function normalizeNanoBananaModel(model: string) {
@@ -81,6 +80,9 @@ async function generateSingleNanobananaImage({
             parts: [{ text: prompt }],
           },
         ],
+        generationConfig: {
+          responseModalities: ['TEXT', 'IMAGE'],
+        },
       }),
     }
   )

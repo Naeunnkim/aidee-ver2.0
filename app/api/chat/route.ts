@@ -1561,7 +1561,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
                       'gemini-2.5-flash-image',
                       'gemini-3.1-flash-image-preview',
                     ])
-                    .default('gemini-2.5-flash-image')
+                    .default('gemini-3.1-flash-image-preview')
                     .describe('Nano Banana model to use'),
                 }),
                 execute: async ({ prompt, count, model }) => {

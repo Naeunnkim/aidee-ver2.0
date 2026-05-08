@@ -2033,11 +2033,6 @@ export default function ChatPage({
                       <p className="text-xs font-medium text-slate-500">
                         생성된 이미지 {m.generatedImages.length}장
                       </p>
-                      {m.generatedImagePrompt ? (
-                        <p className="max-w-[440px] truncate text-right text-[11px] text-slate-400">
-                          {m.generatedImagePrompt}
-                        </p>
-                      ) : null}
                     </div>
                     <div
                       className={`grid gap-3 ${

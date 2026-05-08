@@ -1822,14 +1822,19 @@ export default function ChatPage({
                   {userName}
                 </div>
               </div>
-              <div className="flex items-center gap-2 rounded-[999px] bg-gradient-to-bl from-blue-600/0 to-blue-600/40 px-4 py-1">
+              <a
+                href="https://forms.gle/fFmtcX7DMh27pcqMA"
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-2 rounded-[999px] bg-gradient-to-bl from-blue-600/0 to-blue-600/40 px-4 py-1 transition hover:from-blue-600/10 hover:to-blue-600/60 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+              >
                 <div className="h-4 w-4 overflow-hidden">
                   <div className="h-3.5 w-3.5 outline outline-[1.5px] outline-offset-[-0.75px] outline-white" />
                 </div>
                 <div className="text-sm leading-5 font-medium text-white">
                   Basic
                 </div>
-              </div>
+              </a>
             </div>
           </div>
         </div>

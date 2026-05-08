@@ -1,4 +1,4 @@
-import { google } from '@ai-sdk/google'
+import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { generateObject, generateText, tool, type ModelMessage } from 'ai'
 import { createClient } from '@supabase/supabase-js'
 import { z } from 'zod'
@@ -568,10 +568,12 @@ async function generateStyleReferenceImages({
   project,
   referenceImages,
   conversation,
+  apiKey,
 }: {
   project: ProjectRecord | null
   referenceImages: ReferenceImageRecord[]
   conversation: string
+  apiKey: string
 }) {
   const attempts = [
     {
@@ -607,6 +609,7 @@ async function generateStyleReferenceImages({
       const payload = await generateNanoBananaImages({
         prompt: attempt.prompt,
         count: attempt.count,
+        apiKey,
       })
       payload.purpose = 'style_reference'
 
@@ -1247,16 +1250,17 @@ export async function POST(req: Request) {
       )
     }
 
-    if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-      return new Response(JSON.stringify({ error: 'Gemini API key missing' }), {
+    const apiKey =
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? process.env.GEMINI_API_KEY
+
+    if (!apiKey) {
+      return new Response(JSON.stringify({ error: 'API key not found' }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
       })
     }
 
-    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY && process.env.GEMINI_API_KEY) {
-      process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY
-    }
+    const google = createGoogleGenerativeAI({ apiKey })
 
     if (
       !process.env.NEXT_PUBLIC_SUPABASE_URL ||
@@ -1392,6 +1396,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
         project,
         referenceImages,
         conversation: buildConversationText(messages),
+        apiKey,
       })
 
       if (!generatedImagePayload) {
@@ -1437,6 +1442,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
             userSelection: lastUserMessage,
           }),
           count: 3,
+          apiKey,
         })
         generatedImagePayload.purpose = 'design'
 
@@ -1498,6 +1504,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
             ].join('\n'),
           }),
           count: extractRequestedImageCount(lastUserMessage),
+          apiKey,
         })
         generatedImagePayload.purpose = 'design'
 
@@ -1606,6 +1613,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
                     prompt,
                     count,
                     model,
+                    apiKey,
                   })
                   generatedImagePayload.purpose = 'design'
 
@@ -1690,6 +1698,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
             personaText: finalText,
           }),
           count: 1,
+          apiKey,
         })
         generatedImagePayload.purpose = 'persona'
       } catch (error) {
@@ -1714,6 +1723,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
             !hasGeneratedDesignImagesInMessages(messages)
               ? 3
               : extractRequestedImageCount(lastUserMessage),
+          apiKey,
         })
         generatedImagePayload.purpose = 'design'
 
@@ -1742,6 +1752,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
         project,
         referenceImages,
         conversation: buildConversationText(messages),
+        apiKey,
       })
 
       if (generatedImagePayload) {

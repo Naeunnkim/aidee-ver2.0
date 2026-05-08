@@ -67,11 +67,12 @@ function buildNanobananaPrompt({
 async function generateSingleNanobananaImage({
   prompt,
   model,
+  apiKey,
 }: {
   prompt: string
   model: string
+  apiKey: string
 }) {
-  const apiKey = getGeminiApiKey()
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {
@@ -164,11 +165,14 @@ export async function generateNanoBananaImages({
   prompt,
   count = 1,
   model = DEFAULT_NANO_BANANA_MODEL,
+  apiKey,
 }: {
   prompt: string
   count?: number
   model?: string
+  apiKey?: string
 }): Promise<GeneratedImageBlock> {
+  const resolvedApiKey = apiKey ?? getGeminiApiKey()
   const preferredModel = normalizeNanoBananaModel(model)
   const modelCandidates = [
     preferredModel,
@@ -186,6 +190,7 @@ export async function generateNanoBananaImages({
         const image = await generateSingleNanobananaImage({
           prompt: buildNanobananaPrompt({ prompt, count, index }),
           model: resolvedModel,
+          apiKey: resolvedApiKey,
         })
         images.push(image)
       } catch (error) {

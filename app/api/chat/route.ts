@@ -347,6 +347,16 @@ function buildConversationText(messages: ModelMessage[]) {
     .join('\n\n')
 }
 
+function hasGeneratedDesignImagesInMessages(messages: ModelMessage[]) {
+  const conversation = buildConversationText(messages)
+
+  return (
+    /design\s*이미지\s*\d+장/i.test(conversation) ||
+    /"purpose"\s*:\s*"design"/i.test(conversation) ||
+    /STEP5\s*초기\s*디자인\s*3안\s*세트가\s*이미\s*제시/i.test(conversation)
+  )
+}
+
 function buildFallbackImagePrompt({
   project,
   referenceImages,
@@ -1349,8 +1359,14 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
 
     const shouldGenerateInitialDesignImages =
       currentStageKey === 'step_5_design' &&
-      hasStyleReferenceSelection(lastUserMessage) &&
-      (requestedStageKey === 'step_4_style' || /레퍼런스/i.test(lastUserMessage))
+      !expertCall &&
+      !hasGeneratedDesignImagesInMessages(messages) &&
+      !hasDesignFinalSelection(lastUserMessage) &&
+      !isDesignRevisionRequest(lastUserMessage) &&
+      (hasStyleReferenceSelection(lastUserMessage) ||
+        isImageGenerationRequest(lastUserMessage) ||
+        /다음\s*단계|진행|디자인\s*제안|STEP\s*5/i.test(lastUserMessage) ||
+        requestedStageKey === 'step_4_style')
 
     if (shouldGenerateInitialDesignImages) {
       try {
@@ -1386,6 +1402,77 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
         )
       } catch (error) {
         console.error('Initial design image generation failed:', error)
+        return new Response(
+          '이미지 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+          {
+            status: 500,
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'x-aidee-current-stage': 'step_5_design',
+              'x-aidee-next-stage': 'step_5_design',
+              'x-aidee-transition': 'no',
+              'x-aidee-reason': 'initial_design_image_generation_failed',
+            },
+          }
+        )
+      }
+    }
+
+    const shouldGenerateDesignRevisionImage =
+      currentStageKey === 'step_5_design' &&
+      !expertCall &&
+      hasGeneratedDesignImagesInMessages(messages) &&
+      isDesignRevisionRequest(lastUserMessage) &&
+      !hasDesignFinalSelection(lastUserMessage)
+
+    if (shouldGenerateDesignRevisionImage) {
+      try {
+        generatedImagePayload = await generateNanoBananaImages({
+          prompt: buildFallbackImagePrompt({
+            project,
+            referenceImages,
+            userRequest: [
+              lastUserMessage,
+              'Use the already selected STEP 5 design direction as the base. Generate an improved single product render unless the user explicitly asked for multiple alternatives.',
+            ].join('\n'),
+          }),
+          count: extractRequestedImageCount(lastUserMessage),
+        })
+        generatedImagePayload.purpose = 'design'
+
+        return new Response(
+          appendGeneratedImagesBlock({
+            text: [
+              '선택한 디자인 방향을 기준으로 수정 렌더를 생성했습니다.',
+              '아래 이미지를 확인하고 추가 수정 또는 최종 확정 여부를 알려주세요.',
+            ].join('\n'),
+            payload: generatedImagePayload,
+          }),
+          {
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'x-aidee-current-stage': 'step_5_design',
+              'x-aidee-next-stage': 'step_5_design',
+              'x-aidee-transition': 'no',
+              'x-aidee-reason': 'design_revision_image_generated',
+            },
+          }
+        )
+      } catch (error) {
+        console.error('Design revision image generation failed:', error)
+        return new Response(
+          '이미지 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+          {
+            status: 500,
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'x-aidee-current-stage': 'step_5_design',
+              'x-aidee-next-stage': 'step_5_design',
+              'x-aidee-transition': 'no',
+              'x-aidee-reason': 'design_revision_image_generation_failed',
+            },
+          }
+        )
       }
     }
 
@@ -1518,6 +1605,12 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
     const modelPrintedNanoBananaPlaceholder =
       hasNanoBananaPlaceholder(cleanedText) ||
       hasNanoBananaPlaceholder(result.text)
+    const modelPromisedImageWithoutTool =
+      !generatedImagePayload &&
+      canGenerateImages &&
+      /(?:이미지|시안|렌더).*(?:생성|제작|만들|아래|확인)|(?:생성|제작|만들).*(?:이미지|시안|렌더)/i.test(
+        finalText
+      )
 
     if (shouldBypassModelTextForStyleImages) {
       finalText = getStyleReferenceIntro(generatedImagePayload?.images.length ?? 3)
@@ -1546,7 +1639,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
     if (
       !generatedImagePayload &&
       canGenerateImages &&
-      isImageGenerationRequest(lastUserMessage)
+      (isImageGenerationRequest(lastUserMessage) || modelPromisedImageWithoutTool)
     ) {
       try {
         generatedImagePayload = await generateNanoBananaImages({

@@ -1247,11 +1247,15 @@ export async function POST(req: Request) {
       )
     }
 
-    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
       return new Response(JSON.stringify({ error: 'Gemini API key missing' }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
       })
+    }
+
+    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY && process.env.GEMINI_API_KEY) {
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY
     }
 
     if (

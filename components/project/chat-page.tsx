@@ -63,6 +63,7 @@ type CompanyRecommendation = {
   summary: string
   website: string
   highlight: string
+  thumbnail: string
 }
 
 function normalizeAssistantMessage(message: ChatMessage) {
@@ -86,13 +87,66 @@ function normalizeAssistantMessage(message: ChatMessage) {
 
 function buildChatApiMessages(messages: ChatMessage[]): ChatApiMessage[] {
   return messages.map((message) => {
-    const { cleanedText } = extractGeneratedImagesBlock(message.content)
+    const { cleanedText, imageBlock } = extractGeneratedImagesBlock(
+      message.content
+    )
+    const generatedImagePurpose =
+      imageBlock?.purpose ?? message.generatedImagePurpose
+    const generatedImageCount =
+      imageBlock?.images.length ?? message.generatedImages?.length ?? 0
+    const imageContext =
+      message.role === 'assistant' && generatedImagePurpose && generatedImageCount
+        ? [
+            '',
+            `[시스템 참고: 이 assistant 응답에는 ${generatedImagePurpose} 이미지 ${generatedImageCount}장이 생성되어 있었습니다.]`,
+            generatedImagePurpose === 'design' && generatedImageCount >= 3
+              ? '[시스템 참고: STEP5 초기 디자인 3안 세트가 이미 제시되었습니다. 이후에는 같은 3안 세트를 반복 생성하지 말고 사용자가 선택한 1안을 발전시키거나 확정 처리하세요.]'
+              : '',
+          ]
+            .filter(Boolean)
+            .join('\n')
+        : ''
 
     return {
       role: message.role,
-      content: cleanedText,
+      content: `${cleanedText}${imageContext}`.trim(),
     }
   })
+}
+
+function stripInternalBlocksForDisplay(text: string) {
+  return text
+    .replace(
+      /\n?<<\s*AIDEE[-_ ]?(?:IMAGES|RFP_JSON)\s*>>[\s\S]*?(?:<<\s*\/\s*AIDEE[-_ ]?(?:IMAGES|RFP_JSON)\s*>>|$)/gi,
+      ''
+    )
+    .trim()
+}
+
+function isLikelyImageGenerationTurn({
+  messages,
+  stageKey,
+}: {
+  messages: ChatMessage[]
+  stageKey: StageKey
+}) {
+  const lastUserMessage =
+    [...messages].reverse().find((message) => message.role === 'user')?.content ??
+    ''
+
+  if (stageKey === 'step_4_style') {
+    return !/([1-3])\s*번|이미지\s*([1-3])|레퍼런스\s*([1-3])|선택|확정/.test(
+      lastUserMessage
+    )
+  }
+
+  if (stageKey === 'step_5_design') {
+    return true
+  }
+
+  return /이미지|시안|렌더|무드보드|비주얼|visual|render|image|그려|보여줘|만들어줘/i.test(
+    lastUserMessage
+  )
 }
 
 function parsePersonaData(content: string) {
@@ -522,18 +576,21 @@ function buildCompanyRecommendations(
       summary: `${styleHint} 기반 디자인 고도화`,
       website: 'example.com',
       highlight: `핵심: ${targetHint}`,
+      thumbnail: '/images/partner-company-1.png',
     },
     {
       name: '상상제작소',
       summary: `${styleHint} 시제품 제작 / 목업 대응`,
       website: 'example.com',
       highlight: '핵심: 기구·회로·제작',
+      thumbnail: '/images/partner-company-2.png',
     },
     {
       name: '(주) 한국기술',
       summary: `${styleHint} 양산성 검토 / 제작 파트너`,
       website: 'example.com',
       highlight: '핵심: 제작 안정성',
+      thumbnail: '/images/partner-company-3.png',
     },
   ]
 }
@@ -560,10 +617,12 @@ function CompanyRecommendationsPanel({
             key={company.name}
             className="w-[240px] overflow-hidden rounded-2xl border border-gray-300 bg-white shadow-sm"
           >
-            <div className="flex h-36 items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
-              <div className="flex h-20 w-44 items-center justify-center rounded-2xl bg-white/80 text-sm font-semibold text-slate-300">
-                thumbnail
-              </div>
+            <div className="h-36 overflow-hidden bg-slate-100">
+              <img
+                src={company.thumbnail}
+                alt={`${company.name} thumbnail`}
+                className="h-full w-full object-cover"
+              />
             </div>
             <div className="bg-gray-200 p-3">
               <div className="flex flex-col gap-1.5">
@@ -641,6 +700,9 @@ export default function ChatPage({
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [loadingLabelOverride, setLoadingLabelOverride] = useState<string | null>(
+    null
+  )
   const [isInitialLoading, setIsInitialLoading] = useState(true)
   const [isDownloadingRfp, setIsDownloadingRfp] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -1091,11 +1153,12 @@ export default function ChatPage({
             }
 
             aiContent += decoder.decode(value, { stream: true })
+            const displayContent = stripInternalBlocksForDisplay(aiContent)
             setMessages([
               {
                 id: aiMessageId,
                 role: 'assistant',
-                content: aiContent,
+                content: displayContent,
                 active_agent: 'aidee',
                 created_at: createdAt,
                 stage_key: responseStageKey,
@@ -1148,6 +1211,7 @@ export default function ChatPage({
           console.error(error)
         }
       }
+      setLoadingLabelOverride(null)
       setIsLoading(false)
     }
 
@@ -1272,6 +1336,15 @@ export default function ChatPage({
     expertForRequest: ExpertKey = activeExpert,
     expertCall = false
   ) => {
+    setLoadingLabelOverride(
+      isLikelyImageGenerationTurn({
+        messages: nextMessages,
+        stageKey: stageKeyForRequest,
+      })
+        ? '이미지를 생성하고 있어요.'
+        : null
+    )
+
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1318,9 +1391,10 @@ export default function ChatPage({
         break
       }
       aiContent += decoder.decode(value, { stream: true })
+      const displayContent = stripInternalBlocksForDisplay(aiContent)
       setMessages((prev) =>
         prev.map((msg) =>
-          msg.id === aiMessageId ? { ...msg, content: aiContent } : msg
+          msg.id === aiMessageId ? { ...msg, content: displayContent } : msg
         )
       )
     }
@@ -1369,6 +1443,7 @@ export default function ChatPage({
     }
 
     await applyStageHeaders(response, normalizedMessage.content)
+    setLoadingLabelOverride(null)
   }
 
   const selectExpert = (expert: ExpertKey) => {
@@ -1395,6 +1470,7 @@ export default function ChatPage({
       console.error(error)
     } finally {
       setActiveExpert('aidee')
+      setLoadingLabelOverride(null)
       setIsLoading(false)
     }
   }
@@ -1436,6 +1512,7 @@ export default function ChatPage({
     } catch (error) {
       console.error(error)
     } finally {
+      setLoadingLabelOverride(null)
       setIsLoading(false)
     }
   }
@@ -1497,6 +1574,7 @@ export default function ChatPage({
     } catch (error) {
       console.error(error)
     } finally {
+      setLoadingLabelOverride(null)
       setIsLoading(false)
     }
   }
@@ -1553,6 +1631,7 @@ export default function ChatPage({
         },
       ])
     } finally {
+      setLoadingLabelOverride(null)
       setIsLoading(false)
     }
   }
@@ -1568,7 +1647,7 @@ export default function ChatPage({
 
     const actionText = [
       `스타일 레퍼런스 ${imageIndex + 1}번을 선택합니다.`,
-      '이 방향을 기준으로 형태, 색감, 재질 방향성을 정리하고 다음 단계로 진행해주세요.',
+      '이 방향을 기준으로 STEP 5 디자인 제안 단계에서 제품 디자인 시안 3안을 생성해주세요.',
     ]
       .filter(Boolean)
       .join('\n')
@@ -1589,6 +1668,7 @@ export default function ChatPage({
       [messageId]: imageIndex,
     }))
     setMessages(nextMessages)
+    setLoadingLabelOverride('이미지를 생성하고 있어요.')
     setIsLoading(true)
 
     try {
@@ -1598,7 +1678,8 @@ export default function ChatPage({
         activeAgent: 'aidee',
       })
 
-      await streamAssistantResponse(nextMessages, currentStageKey, 'aidee')
+      await transitionStage('step_5_design', 'style_reference_selected')
+      await streamAssistantResponse(nextMessages, 'step_5_design', 'aidee')
     } catch (error) {
       console.error('Generated image selection failed:', error)
       setMessages((prev) => [
@@ -1614,6 +1695,7 @@ export default function ChatPage({
         },
       ])
     } finally {
+      setLoadingLabelOverride(null)
       setIsLoading(false)
     }
   }
@@ -2116,7 +2198,7 @@ export default function ChatPage({
                 <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:0.4s]" />
               </div>
               <p className="text-sm font-medium text-slate-500">
-                {activeExpertDefinition.loadingLabel}
+                {loadingLabelOverride ?? activeExpertDefinition.loadingLabel}
               </p>
             </div>
           ) : null}

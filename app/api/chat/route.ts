@@ -382,6 +382,52 @@ function buildFallbackImagePrompt({
   ].join('\n')
 }
 
+function buildInitialDesignImagePrompt({
+  project,
+  referenceImages,
+  conversation,
+  userSelection,
+}: {
+  project: ProjectRecord | null
+  referenceImages: ReferenceImageRecord[]
+  conversation: string
+  userSelection: string
+}) {
+  const requirements = truncateText(
+    JSON.stringify(project?.requirements ?? {}, null, 2),
+    1800
+  )
+  const guidelineBlock = truncateText(
+    buildReferenceGuidelineBlock(referenceImages),
+    2200
+  )
+  const conversationSnippet = truncateText(conversation, 3000)
+
+  return [
+    'Create initial product design render options for STEP 5.',
+    'The user selected one style reference direction in STEP 4. Use that selected direction as the single source style direction.',
+    '',
+    `Project title: ${project?.title || 'Untitled project'}`,
+    `User selection: ${userSelection}`,
+    '',
+    'Project requirements:',
+    requirements,
+    '',
+    'Conversation context:',
+    conversationSnippet,
+    '',
+    'Reference design guidelines:',
+    guidelineBlock,
+    '',
+    'Image direction:',
+    '- create one complete product design render per output image',
+    '- keep the selected STEP 4 style direction consistent across all outputs',
+    '- vary only sub-details such as proportion, surface treatment, hardware detail, or structural solution',
+    '- realistic 3D product render, no text overlay, no UI, no watermark',
+    '- do not create collages, boards, grids, labels, or multi-panel images',
+  ].join('\n')
+}
+
 function buildStyleReferencePrompt({
   project,
   referenceImages,
@@ -566,6 +612,26 @@ function hasStyleReferenceSelection(text: string) {
   return /([1-3])\s*번|이미지\s*([1-3])|레퍼런스\s*([1-3])|선택|확정/.test(text)
 }
 
+function isDesignRevisionRequest(text: string) {
+  return /수정|바꿔|변경|조정|다듬|발전|고도화|대안|새로|다시|재생성|추가|더\s*보여|비교/i.test(
+    text
+  )
+}
+
+function hasDesignFinalSelection(text: string) {
+  if (!text.trim() || isDesignRevisionRequest(text)) {
+    return false
+  }
+
+  return [
+    /(?:디자인|시안|렌더|안)\s*(?:을|으로|은|는)?\s*(?:확정|최종|진행|좋아|좋습니다|갈게|가겠습니다|할게|하겠습니다)/i,
+    /(?:이|그)\s*(?:디자인|시안|렌더|안)\s*(?:으로|이|가)?\s*(?:확정|최종|진행|좋아|좋습니다)/i,
+    /(?:[1-3]|첫|두|세)\s*(?:번|번째)?\s*(?:시안|안|이미지)?\s*(?:으로|을|가)?\s*(?:확정|최종|진행|갈게|가겠습니다|좋아|좋습니다|할게|하겠습니다)/i,
+    /(?:A|a)[.)]?\s*(?:이\s*)?안\s*확정/i,
+    /최종\s*확정/i,
+  ].some((pattern) => pattern.test(text))
+}
+
 function buildInitialPrompt(project: ProjectRecord | null) {
   const title = project?.title || '새 프로젝트'
 
@@ -606,6 +672,20 @@ function resolveIntentStageKey({
   currentStageKey: StageKey
   lastUserMessage: string
 }): StageKey {
+  if (
+    currentStageKey === 'step_4_style' &&
+    hasStyleReferenceSelection(lastUserMessage)
+  ) {
+    return 'step_5_design'
+  }
+
+  if (
+    currentStageKey === 'step_5_design' &&
+    hasDesignFinalSelection(lastUserMessage)
+  ) {
+    return 'step_6_rfp'
+  }
+
   if (isCompanyConnectionRequest(lastUserMessage)) {
     return 'step_6_company'
   }
@@ -661,9 +741,11 @@ function getStageSpecificInstruction(currentStageKey: StageKey) {
 [현재 단계 운영]
 - 지금은 STEP 5 디자인 제안 단계입니다.
 - STEP 4에서 선택한 스타일 레퍼런스를 기준으로 디자인 시안을 제안하세요.
-- 필요하면 generate_design_image 도구로 제품 렌더 또는 3D 시안 1~2장을 생성하세요.
+- STEP 5에서 3개짜리 초기 디자인 시안 세트는 최대 1회만 생성합니다.
+- 이미 디자인 시안 이미지가 대화에 있으면 새 3개 세트를 다시 만들지 말고, 사용자가 선택한 1안을 기준으로 형태 / CMF / 기능 디테일을 발전시키세요.
+- 후속 이미지가 꼭 필요할 때도 선택된 1안의 개선 렌더 1장만 생성하세요. 비교용 2~3안 재생성은 사용자가 명시적으로 요청한 경우에만 허용합니다.
+- 사용자가 시안을 확정하거나 "1번으로 진행", "이 안으로 확정"처럼 최종 선택을 말하면 추가 질문이나 이미지 생성 없이 STEP 6 RFP 문서 생성으로 바로 넘어가세요.
 - 디자인 시안 1안과 수정 여부가 확정되기 전에는 RFP로 넘어가지 마세요.
-- 시안이 확정되면 STEP 6 RFP 문서 생성으로 넘어가세요.
 `.trim()
     case 'step_6_rfp':
       return `
@@ -1264,6 +1346,48 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
       })
     }
     const shouldBypassModelTextForStyleImages = shouldGenerateStyleReferenceImages
+
+    const shouldGenerateInitialDesignImages =
+      currentStageKey === 'step_5_design' &&
+      hasStyleReferenceSelection(lastUserMessage) &&
+      (requestedStageKey === 'step_4_style' || /레퍼런스/i.test(lastUserMessage))
+
+    if (shouldGenerateInitialDesignImages) {
+      try {
+        generatedImagePayload = await generateNanoBananaImages({
+          prompt: buildInitialDesignImagePrompt({
+            project,
+            referenceImages,
+            conversation: buildConversationText(messages),
+            userSelection: lastUserMessage,
+          }),
+          count: 3,
+        })
+        generatedImagePayload.purpose = 'design'
+
+        return new Response(
+          appendGeneratedImagesBlock({
+            text: [
+              '선택한 스타일 레퍼런스를 기준으로 STEP 5 디자인 시안 3안을 생성했습니다.',
+              '아래 시안 중 가장 발전시키고 싶은 1안을 선택해주세요.',
+              '이후에는 선택한 1안을 기준으로 부분 수정과 최종 확정을 진행합니다.',
+            ].join('\n'),
+            payload: generatedImagePayload,
+          }),
+          {
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'x-aidee-current-stage': 'step_5_design',
+              'x-aidee-next-stage': 'step_5_design',
+              'x-aidee-transition': 'no',
+              'x-aidee-reason': 'initial_design_images_generated',
+            },
+          }
+        )
+      } catch (error) {
+        console.error('Initial design image generation failed:', error)
+      }
+    }
 
     if (generatedImagePayload && shouldGenerateStyleReferenceImages) {
       const styleText = getStyleReferenceIntro(generatedImagePayload.images.length)

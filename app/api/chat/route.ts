@@ -1356,6 +1356,22 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
         referenceImages,
         conversation: buildConversationText(messages),
       })
+
+      if (!generatedImagePayload) {
+        return new Response(
+          '스타일 레퍼런스 이미지 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+          {
+            status: 500,
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'x-aidee-current-stage': 'step_4_style',
+              'x-aidee-next-stage': 'step_4_style',
+              'x-aidee-transition': 'no',
+              'x-aidee-reason': 'style_reference_image_generation_failed',
+            },
+          }
+        )
+      }
     }
     const shouldBypassModelTextForStyleImages = shouldGenerateStyleReferenceImages
 
@@ -1363,9 +1379,11 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
       (forceImageGeneration === 'initial_design' ||
         currentStageKey === 'step_5_design') &&
       !expertCall &&
-      !hasGeneratedDesignImagesInMessages(messages) &&
+      (forceImageGeneration === 'initial_design' ||
+        !hasGeneratedDesignImagesInMessages(messages)) &&
       !hasDesignFinalSelection(lastUserMessage) &&
-      !isDesignRevisionRequest(lastUserMessage) &&
+      (forceImageGeneration === 'initial_design' ||
+        !isDesignRevisionRequest(lastUserMessage)) &&
       (forceImageGeneration === 'initial_design' ||
         hasStyleReferenceSelection(lastUserMessage) ||
         isImageGenerationRequest(lastUserMessage) ||
@@ -1614,7 +1632,7 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
     const modelPromisedImageWithoutTool =
       !generatedImagePayload &&
       canGenerateImages &&
-      /(?:이미지|시안|렌더).*(?:생성|제작|만들|아래|확인)|(?:생성|제작|만들).*(?:이미지|시안|렌더)/i.test(
+      /(?:이미지|시안|렌더).*(?:생성|제작|만들|아래|확인)|(?:생성|제작|만들).*(?:이미지|시안|렌더)|(?:시안|디자인)\s*[1-3]\s*(?:안|번)|[1-3]\s*안\s*[:：]|디자인\s*의도|형태\s*[:：]|색감\s*[:：]|재질\s*[:：]/i.test(
         finalText
       )
 
@@ -1654,7 +1672,11 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
             referenceImages,
             userRequest: lastUserMessage,
           }),
-          count: extractRequestedImageCount(lastUserMessage),
+          count:
+            currentStageKey === 'step_5_design' &&
+            !hasGeneratedDesignImagesInMessages(messages)
+              ? 3
+              : extractRequestedImageCount(lastUserMessage),
         })
         generatedImagePayload.purpose = 'design'
 

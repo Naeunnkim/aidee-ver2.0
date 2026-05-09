@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 
 import { createClient } from '@/lib/supabase/server'
-import { isKnownStageKey } from '@/lib/study'
+import { isKnownStageKey, isSameOrNextStage } from '@/lib/study'
 
 type OpenStageRow = {
   id: string
@@ -56,6 +56,21 @@ export async function POST(request: Request) {
       currentStageKey: openStage.stage_key,
       transitioned: false,
     })
+  }
+
+  if (
+    openStage?.stage_key &&
+    isKnownStageKey(openStage.stage_key) &&
+    !isSameOrNextStage(openStage.stage_key, nextStageKey)
+  ) {
+    return NextResponse.json(
+      {
+        error: 'Non-sequential stage transition is not allowed',
+        currentStageKey: openStage.stage_key,
+        requestedStageKey: nextStageKey,
+      },
+      { status: 409 }
+    )
   }
 
   const now = new Date()

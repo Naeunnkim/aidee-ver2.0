@@ -26,10 +26,13 @@ import { createClient } from '@/lib/supabase/client'
 import {
   SIDEBAR_STEPS,
   STAGE_DEFINITIONS,
+  canRequestCompanyStage,
+  canRequestRfpStage,
   getNextStageKey,
   getSidebarStepIndex,
   getStageKeysForSidebarIndex,
   isKnownStageKey,
+  isSameOrNextStage,
   type StageKey,
 } from '@/lib/study'
 
@@ -122,6 +125,7 @@ function stripInternalBlocksForDisplay(text: string) {
       /\n?<<\s*AIDEE[-_ ]?(?:IMAGES|RFP_JSON)\s*>>[\s\S]*?(?:<<\s*\/\s*AIDEE[-_ ]?(?:IMAGES|RFP_JSON)\s*>>|$)/gi,
       ''
     )
+    .replace(/\n?\[시스템\s*참고:[\s\S]*?\]/gi, '')
     .trim()
 }
 
@@ -721,9 +725,6 @@ export default function ChatPage({
   const [isExpertPickerOpen, setIsExpertPickerOpen] = useState(false)
   const [pendingNextStageKey, setPendingNextStageKey] =
     useState<StageKey | null>(null)
-  const [focusedSidebarIndex, setFocusedSidebarIndex] = useState(0)
-  const [hasManualSidebarFocus, setHasManualSidebarFocus] = useState(false)
-
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const searchParams = useSearchParams()
@@ -735,8 +736,6 @@ export default function ChatPage({
   const activeSidebarIndex = getSidebarStepIndex(uiStageKey)
   const currentStageExperts = getStageExperts(uiStageKey)
   const scrollToSidebarStep = useCallback((sidebarIndex: number) => {
-    setFocusedSidebarIndex(sidebarIndex)
-    setHasManualSidebarFocus(true)
     const node = scrollRef.current
     if (!node) {
       return
@@ -952,16 +951,72 @@ export default function ChatPage({
         return
       }
 
-      const response = await fetch('/api/study/stage', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId,
-          projectId,
-          nextStageKey,
-          exitReason,
-        }),
-      })
+      const postStageTransition = (stageKey: StageKey, reason: string) =>
+        fetch('/api/study/stage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId,
+            projectId,
+            nextStageKey: stageKey,
+            exitReason: reason,
+          }),
+        })
+
+      const response = await postStageTransition(nextStageKey, exitReason)
+
+      if (
+        response.status === 409 &&
+        exitReason === 'style_reference_selected' &&
+        nextStageKey === 'step_5_design'
+      ) {
+        const conflictData = (await response.json().catch(() => null)) as {
+          currentStageKey?: StageKey
+        } | null
+        let cursorStageKey = conflictData?.currentStageKey
+
+        while (
+          cursorStageKey &&
+          cursorStageKey !== nextStageKey &&
+          isKnownStageKey(cursorStageKey)
+        ) {
+          const intermediateStageKey = getNextStageKey(cursorStageKey)
+
+          if (!intermediateStageKey) {
+            break
+          }
+
+          const catchUpResponse = await postStageTransition(
+            intermediateStageKey,
+            intermediateStageKey === nextStageKey
+              ? exitReason
+              : 'stage_catch_up'
+          )
+
+          if (!catchUpResponse.ok) {
+            const errorText = await catchUpResponse.text()
+            throw new Error(
+              `Stage transition failed: ${catchUpResponse.status} ${errorText}`
+            )
+          }
+
+          const catchUpData = (await catchUpResponse.json()) as {
+            currentStageKey?: StageKey
+          }
+          cursorStageKey = catchUpData.currentStageKey
+        }
+
+        if (cursorStageKey !== nextStageKey) {
+          throw new Error(
+            `Stage transition failed: unable to catch up from ${conflictData?.currentStageKey ?? 'unknown'} to ${nextStageKey}`
+          )
+        }
+
+        setCurrentStageKey(nextStageKey)
+        setPendingNextStageKey(null)
+        await fetchStageTimeline()
+        return
+      }
 
       if (!response.ok) {
         const errorText = await response.text()
@@ -991,7 +1046,8 @@ export default function ChatPage({
       if (
         currentStageHeader &&
         isKnownStageKey(currentStageHeader) &&
-        currentStageHeader !== currentStageKey
+        currentStageHeader !== currentStageKey &&
+        isSameOrNextStage(currentStageKey, currentStageHeader)
       ) {
         await transitionStage(currentStageHeader, `${reasonHeader}_resync`)
         return
@@ -1002,10 +1058,11 @@ export default function ChatPage({
         nextStageHeader &&
         isKnownStageKey(nextStageHeader)
       ) {
-        if (nextStageHeader !== currentStageKey) {
-          setPendingNextStageKey(nextStageHeader)
-          setFocusedSidebarIndex(getSidebarStepIndex(nextStageHeader))
-          setHasManualSidebarFocus(false)
+        if (
+          nextStageHeader !== currentStageKey &&
+          isSameOrNextStage(currentStageKey, nextStageHeader)
+        ) {
+          await transitionStage(nextStageHeader, reasonHeader)
         }
         return
       }
@@ -1071,6 +1128,14 @@ export default function ChatPage({
         const latestRfpFromHistory = [...normalizedMessages]
           .reverse()
           .find((message) => message.rfpJson)?.rfpJson
+        const latestRfpContentFromHistory = [...normalizedMessages]
+          .reverse()
+          .find(
+            (message) =>
+              message.normalizedMessage.role === 'assistant' &&
+              (message.normalizedMessage.content.includes('# 제품 제안요청서') ||
+                message.normalizedMessage.content.includes('## 1. 프로젝트 개요'))
+          )?.normalizedMessage.content
         const latestImageBlockFromHistory = [...normalizedMessages]
           .reverse()
           .find((message) => message.imageBlock && message.imageBlock.purpose !== 'persona')
@@ -1078,6 +1143,10 @@ export default function ChatPage({
 
         if (latestRfpFromHistory) {
           setLatestRfpJson(latestRfpFromHistory)
+        }
+
+        if (latestRfpContentFromHistory) {
+          setLatestRfpContent(latestRfpContentFromHistory)
         }
 
         if (latestImageBlockFromHistory) {
@@ -1101,7 +1170,8 @@ export default function ChatPage({
       if (
         searchParams.get('isNew') !== 'true' ||
         messages.length > 0 ||
-        isLoading
+        isLoading ||
+        !sessionId
       ) {
         return
       }
@@ -1231,6 +1301,7 @@ export default function ChatPage({
     searchParams,
     transitionStage,
     currentStageKey,
+    sessionId,
   ])
 
   useEffect(() => {
@@ -1239,45 +1310,6 @@ export default function ChatPage({
       node.scrollTop = node.scrollHeight
     }
   }, [messages, isLoading])
-
-  useEffect(() => {
-    setFocusedSidebarIndex(getSidebarStepIndex(uiStageKey))
-    setHasManualSidebarFocus(false)
-  }, [uiStageKey])
-
-  useEffect(() => {
-    const latestRfpMessage = [...messages]
-      .reverse()
-      .find(
-        (message) =>
-          message.role === 'assistant' &&
-          (message.content.includes('# 제품 제안요청서') ||
-            message.content.includes('## 1. 프로젝트 개요'))
-      )
-
-    if (latestRfpMessage?.content) {
-      setLatestRfpContent(latestRfpMessage.content)
-    }
-  }, [messages])
-
-  useEffect(() => {
-    const latestImageMessage = [...messages]
-      .reverse()
-      .find(
-        (message) =>
-          message.role === 'assistant' &&
-          Array.isArray(message.generatedImages) &&
-          message.generatedImages.length > 0
-      )
-
-    if (latestImageMessage?.generatedImages?.length) {
-      setLatestGeneratedImageBlock({
-        images: latestImageMessage.generatedImages,
-        prompt: latestImageMessage.generatedImagePrompt ?? '',
-        model: 'gemini-nanobanana',
-      })
-    }
-  }, [messages])
 
   const handleRfpDownload = useCallback(async () => {
     try {
@@ -1499,7 +1531,13 @@ export default function ChatPage({
       return
     }
 
-    const nextStageKey = pendingNextStageKey ?? getNextStageKey(currentStageKey)
+    const candidateStageKey =
+      pendingNextStageKey ?? getNextStageKey(currentStageKey)
+    const nextStageKey =
+      candidateStageKey && isSameOrNextStage(currentStageKey, candidateStageKey)
+        ? candidateStageKey
+        : getNextStageKey(currentStageKey)
+
     if (!nextStageKey) {
       return
     }
@@ -1537,11 +1575,17 @@ export default function ChatPage({
   }
 
   const getIntentStageKey = (text: string, fallbackStageKey: StageKey) => {
-    if (/협력\s*업체|업체\s*연결|업체\s*추천|파트너|vendor|company/i.test(text)) {
+    if (
+      /협력\s*업체|업체\s*연결|업체\s*추천|파트너|vendor|company/i.test(text) &&
+      canRequestCompanyStage(fallbackStageKey)
+    ) {
       return 'step_6_company'
     }
 
-    if (/rfp|제안요청서|제안\s*요청서|문서\s*생성|pdf/i.test(text)) {
+    if (
+      /rfp|제안요청서|제안\s*요청서|문서\s*생성|pdf/i.test(text) &&
+      canRequestRfpStage(fallbackStageKey)
+    ) {
       return 'step_6_rfp'
     }
 
@@ -1550,7 +1594,7 @@ export default function ChatPage({
 
   const onFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!input.trim() || isLoading) {
+    if (!input.trim() || isLoading || !sessionId) {
       return
     }
 

@@ -34,7 +34,7 @@ type CardLayoutWithRefProps = CardLayoutProps & {
 }
 
 const PERSONA_CARD_WIDTH = 492
-const PERSONA_CARD_HEIGHT = 256
+const PERSONA_CARD_HEIGHT = 292
 const PERSONA_CARD_DISPLAY_SCALE = 1.35
 
 export default function PersonaCard({
@@ -168,7 +168,7 @@ const CardLayout = ({ data, cardRef }: CardLayoutWithRefProps) => {
     <div
       ref={cardRef}
       data-persona-card="true"
-      className="relative h-64 w-[492px] max-w-full overflow-hidden rounded-xl font-sans shadow-[0px_0px_24px_0px_rgba(0,0,0,0.12)]"
+      className="relative w-[492px] max-w-full overflow-hidden rounded-xl font-sans shadow-[0px_0px_24px_0px_rgba(0,0,0,0.12)]"
       style={{
         width: `${PERSONA_CARD_WIDTH}px`,
         height: `${PERSONA_CARD_HEIGHT}px`,
@@ -176,8 +176,11 @@ const CardLayout = ({ data, cardRef }: CardLayoutWithRefProps) => {
       }}
     >
       <div
-        className="absolute left-0 top-0 h-64 w-36 rounded-bl-lg rounded-tl-lg"
-        style={{ backgroundColor: '#d4d4d8' }}
+        className="absolute left-0 top-0 w-36 rounded-bl-lg rounded-tl-lg"
+        style={{
+          height: `${PERSONA_CARD_HEIGHT}px`,
+          backgroundColor: '#d4d4d8',
+        }}
       >
         {data.imageUrl ? (
           <img
@@ -188,7 +191,7 @@ const CardLayout = ({ data, cardRef }: CardLayoutWithRefProps) => {
         ) : null}
       </div>
 
-      <div className="absolute left-[167px] top-[9.5px] flex h-[238px] w-80 flex-col items-start justify-start gap-1 overflow-hidden">
+      <div className="absolute left-[167px] top-[9.5px] flex h-[273px] w-80 flex-col items-start justify-start gap-1 overflow-hidden">
         <div className="flex w-72 flex-col items-start justify-start">
           <div className="inline-flex items-end justify-start gap-1">
             <h2
@@ -204,15 +207,25 @@ const CardLayout = ({ data, cardRef }: CardLayoutWithRefProps) => {
           <div className="inline-flex w-32 flex-col items-start justify-start gap-1.5">
             <MiniSection title="User" items={data.user} />
             <MiniSection title="Usage" items={data.behaviorMap} />
-            <MiniSection title="Decision" items={data.decision} />
+            <MiniSection
+              title="Decision"
+              items={data.decision}
+              maxItems={3}
+            />
           </div>
 
           <div className="inline-flex w-36 flex-col items-start justify-start gap-1.5">
-            <MiniSection title="Problem" items={data.problem} compact />
+            <MiniSection
+              title="Problem"
+              items={data.problem}
+              compact
+              maxItems={3}
+            />
             <MiniSection
               title="Current Solution"
               items={data.correlationAnalysis}
               compact
+              maxItems={3}
             />
             <SuccessSection items={data.success} />
           </div>
@@ -226,11 +239,17 @@ function MiniSection({
   title,
   items,
   compact = false,
+  maxItems = 4,
 }: {
   title: string
   items: string[]
   compact?: boolean
+  maxItems?: number
 }) {
+  const visibleItems = items
+    .slice(0, maxItems)
+    .map((item) => item.replace(/\.{2,}|…/g, '').trim())
+
   return (
     <section className="flex w-full flex-col items-start justify-start gap-0.5">
       <div className="flex w-full flex-col items-start justify-start gap-px">
@@ -250,11 +269,11 @@ function MiniSection({
         }
         style={{ color: '#3f3f46' }}
       >
-        {items.slice(0, 4).map((item, index) =>
+        {visibleItems.map((item, index) =>
           compact ? (
             <span key={`${title}-${index}-${item}`}>
               • {item}
-              {index < Math.min(items.length, 4) - 1 ? <br /> : null}
+              {index < visibleItems.length - 1 ? <br /> : null}
             </span>
           ) : (
             <span key={`${title}-${index}-${item}`}>• {item}</span>
@@ -266,6 +285,11 @@ function MiniSection({
 }
 
 function SuccessSection({ items }: { items: SuccessItem[] }) {
+  const visibleItems = items.slice(0, 3).map((item) => ({
+    tag: item.tag.replace(/\.{2,}|…/g, '').trim(),
+    desc: item.desc.replace(/\.{2,}|…/g, '').trim(),
+  }))
+
   return (
     <section className="flex w-full flex-col items-start justify-start gap-0.5">
       <div className="flex w-full flex-col items-start justify-start gap-px">
@@ -278,7 +302,7 @@ function SuccessSection({ items }: { items: SuccessItem[] }) {
         <div className="h-px w-full" style={{ backgroundColor: '#a1a1aa' }} />
       </div>
 
-      {items.slice(0, 3).map((item, index) => (
+      {visibleItems.map((item, index) => (
         <div
           key={`${item.tag}-${item.desc}-${index}`}
           className="inline-flex w-full items-center justify-start gap-[3px]"
@@ -288,7 +312,7 @@ function SuccessSection({ items }: { items: SuccessItem[] }) {
             style={{ backgroundColor: '#dbeafe' }}
           >
             <span
-              className="max-w-[58px] truncate text-center text-[4.5px] font-medium leading-[6px]"
+              className="max-w-[58px] overflow-hidden text-center text-[4.5px] font-medium leading-[6px]"
               style={{ color: '#0ea5e9' }}
             >
               #{item.tag}
@@ -296,7 +320,7 @@ function SuccessSection({ items }: { items: SuccessItem[] }) {
           </div>
           {item.desc ? (
             <span
-              className="flex-1 truncate text-[4.5px] font-medium leading-[6px]"
+              className="flex-1 overflow-hidden text-[4.5px] font-medium leading-[6px]"
               style={{ color: '#a1a1aa' }}
             >
               {item.desc}

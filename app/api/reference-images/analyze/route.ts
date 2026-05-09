@@ -1,12 +1,7 @@
-import { google } from '@ai-sdk/google'
+import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { generateText } from 'ai'
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-const googleApiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY
 
 const ANALYSIS_PROMPT = `
 이 이미지는 사용자가 업로드한 프로젝트 레퍼런스 이미지입니다.
@@ -52,6 +47,10 @@ type ReferenceImageRow = {
 }
 
 function getSupabaseAdmin() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
   if (!supabaseUrl) {
     throw new Error('NEXT_PUBLIC_SUPABASE_URL is missing')
   }
@@ -69,6 +68,17 @@ function getSupabaseAdmin() {
       autoRefreshToken: false,
     },
   })
+}
+
+function getGoogleModel() {
+  const apiKey =
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? process.env.GEMINI_API_KEY
+
+  if (!apiKey) {
+    throw new Error('GOOGLE_GENERATIVE_AI_API_KEY or GEMINI_API_KEY is missing')
+  }
+
+  return createGoogleGenerativeAI({ apiKey })('gemini-2.5-flash')
 }
 
 function stripCodeFence(text: string) {
@@ -93,10 +103,6 @@ function safeParseAnalysis(text: string) {
 }
 
 async function analyzeSingleImage(image: ReferenceImageRow) {
-  if (!googleApiKey) {
-    throw new Error('GOOGLE_GENERATIVE_AI_API_KEY is missing')
-  }
-
   const imageResponse = await fetch(image.image_url)
   if (!imageResponse.ok) {
     throw new Error(`Failed to fetch image: ${image.file_name ?? image.id}`)
@@ -104,7 +110,7 @@ async function analyzeSingleImage(image: ReferenceImageRow) {
 
   const imageBuffer = await imageResponse.arrayBuffer()
   const result = await generateText({
-    model: google('gemini-2.5-flash'),
+    model: getGoogleModel(),
     messages: [
       {
         role: 'user',

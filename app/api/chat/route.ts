@@ -20,7 +20,14 @@ import {
   type RfpDocument,
   buildRfpObjectPrompt,
 } from '@/lib/rfp'
-import { type StageKey, getNextStageKey, isKnownStageKey } from '@/lib/study'
+import {
+  canRequestCompanyStage,
+  canRequestRfpStage,
+  type StageKey,
+  getNextStageKey,
+  isKnownStageKey,
+  isSameOrNextStage,
+} from '@/lib/study'
 
 export const maxDuration = 60
 
@@ -521,6 +528,7 @@ function isPersonaCardText(text: string) {
 function isPersonaImagePlaceholderText(text: string) {
   return (
     currentPersonaTextPattern.test(text) ||
+    isPersonaSummaryDraftText(text) ||
     /페르소나.*이미지|이미지.*페르소나|이미지\s*placeholder|프롬프트\s*:|\(이미지\s*생성\s*중/i.test(
       text
     )
@@ -529,6 +537,225 @@ function isPersonaImagePlaceholderText(text: string) {
 
 const currentPersonaTextPattern =
   /이\s*페르소나.*리서치|리서치를\s*진행할까요|페르소나.*수정할까요/i
+
+function isPersonaSummaryDraftText(text: string) {
+  return (
+    /페르소나.*(?:정보|내용|정리|카드|생성)/i.test(text) &&
+    /(?:A\.\s*)?User|인적\s*\/\s*문화적\s*요소|행동\s*\/\s*라이프\s*패턴|사용\s*특성|소비\s*취향/i.test(
+      text
+    )
+  )
+}
+
+function extractPersonaSummaryValue(text: string, labelPattern: RegExp) {
+  const lines = text
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/^[-•]\s*/, '')
+        .replace(/\*\*/g, '')
+        .trim()
+    )
+    .filter(Boolean)
+
+  const matchedLine = lines.find((line) => labelPattern.test(line))
+  if (!matchedLine) {
+    return ''
+  }
+
+  return matchedLine.replace(labelPattern, '').replace(/^[:：]\s*/, '').trim()
+}
+
+function summarizePersonaCardItem(text: string, fallback: string) {
+  const normalized = (text || fallback)
+    .replace(/\.{2,}|…/g, '')
+    .replace(/[“”"']/g, '')
+    .replace(/(?:입니다|합니다|느낍니다|보입니다|해요|어요|니다)$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!normalized) {
+    return fallback
+  }
+
+  const summaryRules: Array<[RegExp, string]> = [
+    [/(20대|30대|40대).*직장인/, '$1 직장인'],
+    [/고시생|수험생|시험|자격/, '시험 준비생'],
+    [/프리랜서/, '프리랜서 사용자'],
+    [/집중.*(흐트러|깨|끊).*재몰입|재몰입.*(어려|오래|지연)/, '재몰입 어려움'],
+    [/집중.*(필요|유지|몰입)|몰입.*(시간|필요|유지)/, '몰입 시간 필요'],
+    [/산만|방해|자극/, '외부 자극 취약'],
+    [/효율|생산성/, '효율성 중시'],
+    [/디자인|감성|심미/, '디자인 감성 중시'],
+    [/성능|효과|기능/, '효과 우선'],
+    [/가격|가성비/, '가성비 중시'],
+    [/루틴|습관|반복/, '루틴 유지 필요'],
+    [/업무|학습|공부/, '업무 학습 몰입'],
+  ]
+
+  for (const [pattern, replacement] of summaryRules) {
+    if (pattern.test(normalized)) {
+      return replacement.includes('$')
+        ? normalized.replace(pattern, replacement).replace(/\s+/g, ' ').trim()
+        : replacement
+    }
+  }
+
+  const clause = normalized.split(/[,.，。:：/]|(?:\s+및\s+)|(?:\s+또는\s+)/)[0]?.trim()
+  if (clause && clause.length <= 20) {
+    return clause
+  }
+
+  const words = normalized.split(/\s+/).filter(Boolean)
+  const phrase = words.reduce<string[]>((acc, word) => {
+    const next = [...acc, word].join(' ')
+    return next.length <= 18 ? [...acc, word] : acc
+  }, [])
+
+  return phrase.length > 0 ? phrase.join(' ') : fallback
+}
+
+function buildPersonaCardTextFromDraft(text: string) {
+  const userValue =
+    summarizePersonaCardItem(
+      extractPersonaSummaryValue(text, /^(?:인적\s*\/\s*문화적\s*요소|User)\s*[:：]?\s*/i),
+      '성인 집중 사용자'
+    )
+  const behaviorValue =
+    summarizePersonaCardItem(
+      extractPersonaSummaryValue(text, /^행동\s*\/\s*라이프\s*패턴\s*[:：]?\s*/i),
+      '몰입 시간 필요'
+    )
+  const usageValue =
+    summarizePersonaCardItem(
+      extractPersonaSummaryValue(text, /^사용\s*특성\s*[:：]?\s*/i),
+      '재몰입 어려움'
+    )
+  const preferenceValue =
+    summarizePersonaCardItem(
+      extractPersonaSummaryValue(text, /^소비\s*취향\s*[:：]?\s*/i),
+      '효율성 중시'
+    )
+
+  return [
+    'Persona Card',
+    '',
+    'A. User',
+    `- ${userValue}`,
+    `- ${preferenceValue}`,
+    '',
+    'B. Behavior Map',
+    `- ${behaviorValue}`,
+    `- ${usageValue}`,
+    '',
+    'C. Correlation Analysis',
+    '- 의지 의존',
+    '- 방해 후 지연',
+    '',
+    'D. Problem',
+    `- ${usageValue}`,
+    '- 회복 시간 지연',
+    '',
+    'E. Success',
+    '- 빠른 몰입 회복',
+    '- 재시작 시간 절약',
+    '',
+    'F. Decision',
+    '- 실제 집중 효과',
+    '- 반복 사용 부담',
+    '',
+    '이 페르소나로 리서치를 진행할까요, 아니면 페르소나를 수정할까요?',
+    '',
+    'A. 리서치 진행',
+    'B. 페르소나 수정',
+    'C. 다시 정리',
+  ].join('\n')
+}
+
+function getPersonaClarificationStatus(text: string) {
+  const normalized = text.replace(/\s+/g, ' ')
+  const hasHumanProfile =
+    /(?:\d{2}\s*대|20대|30대|40대|직장인|학생|고시생|프리랜서|자영업|부모|거주|성향|가치관|성격)/i.test(
+      normalized
+    )
+  const hasUsageContext =
+    /(?:언제|순간|하루|아침|저녁|업무|학습|공부|집중|사용\s*전|사용\s*중|사용\s*후|공간|카페|서재|침실|사무실|TPO)/i.test(
+      normalized
+    )
+  const hasPainPoint =
+    /(?:불편|문제|어려움|결핍|니즈|욕구|흐트러|재몰입|해결|한계|제약)/i.test(
+      normalized
+    )
+  const hasDecisionCriteria =
+    /(?:구매|선호|취향|브랜드|가격|성능|디자인|감성|우선순위|소비|효율|생산성|가치)/i.test(
+      normalized
+    )
+  const completedCount = [
+    hasHumanProfile,
+    hasUsageContext,
+    hasPainPoint,
+    hasDecisionCriteria,
+  ].filter(Boolean).length
+
+  return {
+    hasHumanProfile,
+    hasUsageContext,
+    hasPainPoint,
+    hasDecisionCriteria,
+    isComplete: completedCount >= 4,
+  }
+}
+
+function buildPersonaClarificationQuestion(text: string) {
+  const status = getPersonaClarificationStatus(text)
+
+  if (!status.hasHumanProfile) {
+    return [
+      '좋아요. 페르소나 카드를 만들기 전에 사용자를 조금 더 구체화해야 합니다.',
+      '',
+      '이 제품을 가장 자주 쓸 사람의 나이대와 직업은 무엇에 가깝나요?',
+      '',
+      'A. 20대 후반 직장인',
+      'B. 시험/자격 준비 중인 학습자',
+      'C. 집중 업무가 많은 프리랜서',
+    ].join('\n')
+  }
+
+  if (!status.hasUsageContext) {
+    return [
+      '좋아요. 사용자의 기본 윤곽은 잡혔고, 이제 실제 사용 장면이 필요합니다.',
+      '',
+      '그 사람이 하루 중 이 제품을 가장 필요로 하는 순간은 언제인가요?',
+      '',
+      'A. 업무나 공부를 시작하기 직전',
+      'B. 집중이 끊긴 뒤 다시 시작할 때',
+      'C. 긴 작업을 마무리까지 유지해야 할 때',
+    ].join('\n')
+  }
+
+  if (!status.hasPainPoint) {
+    return [
+      '좋아요. 사용 장면은 잡혔고, 이제 해결해야 할 불편함을 좁히면 됩니다.',
+      '',
+      '그 순간에 사용자가 가장 크게 불편해하는 점은 무엇인가요?',
+      '',
+      'A. 다시 몰입하기까지 시간이 오래 걸림',
+      'B. 주변 자극 때문에 쉽게 산만해짐',
+      'C. 집중 루틴을 꾸준히 유지하기 어려움',
+    ].join('\n')
+  }
+
+  return [
+    '좋아요. 문제 상황까지 잡혔고, 마지막으로 선택 기준을 확인하면 페르소나 카드로 정리할 수 있습니다.',
+    '',
+    '이 사용자가 제품을 고를 때 가장 먼저 볼 기준은 무엇일까요?',
+    '',
+    'A. 실제 집중 효과',
+    'B. 부담 없는 사용성',
+    'C. 책상 위에 어울리는 디자인',
+  ].join('\n')
+}
 
 function buildPersonaImagePrompt({
   project,
@@ -649,7 +876,9 @@ async function generateStyleReferenceImages({
 }
 
 function hasStyleReferenceSelection(text: string) {
-  return /([1-3])\s*번|이미지\s*([1-3])|레퍼런스\s*([1-3])|선택|확정/.test(text)
+  return /([1-3])\s*번|이미지\s*([1-3])|레퍼런스\s*([1-3])|첫\s*번째|두\s*번째|세\s*번째|1\s*번째|2\s*번째|3\s*번째|선택|확정/.test(
+    text
+  )
 }
 
 function isDesignRevisionRequest(text: string) {
@@ -738,11 +967,17 @@ function resolveIntentStageKey({
     return 'step_6_rfp'
   }
 
-  if (isCompanyConnectionRequest(lastUserMessage)) {
+  if (
+    isCompanyConnectionRequest(lastUserMessage) &&
+    canRequestCompanyStage(currentStageKey)
+  ) {
     return 'step_6_company'
   }
 
-  if (isRfpDocumentRequest(lastUserMessage)) {
+  if (
+    isRfpDocumentRequest(lastUserMessage) &&
+    canRequestRfpStage(currentStageKey)
+  ) {
     return 'step_6_rfp'
   }
 
@@ -764,7 +999,11 @@ function getStageSpecificInstruction(currentStageKey: StageKey) {
 [현재 단계 운영]
 - 지금은 STEP 2의 페르소나 정리 단계입니다.
 - 사용자 답변을 바탕으로 페르소나를 구체화하세요.
-- 조건이 충족되면 반드시 Persona Card 템플릿을 출력하고, 마지막에 "이 페르소나로 리서치를 진행할까요, 아니면 페르소나를 수정할까요?" 질문을 넣으세요.
+- 나이/직업 등 인적 속성, 핵심 사용 장면, 가장 큰 불편함, 구매/선택 기준이 모두 확인되기 전에는 Persona Card를 출력하지 마세요.
+- 정보가 부족하면 부족한 항목을 채우는 질문 1개만 하세요.
+- 조건이 충족되면 "카드를 생성해볼까요?"라고 묻지 말고 반드시 Persona Card 템플릿을 바로 출력하고, 마지막에 "이 페르소나로 리서치를 진행할까요, 아니면 페르소나를 수정할까요?" 질문을 넣으세요.
+- Persona Card 내부 항목은 모두 15자 내외의 완결된 짧은 명사구로 요약하고, 말줄임표("...", "…")를 절대 사용하지 마세요.
+- 긴 문장을 중간에서 자르지 말고, 의미가 끝나는 짧은 표현으로 다시 쓰세요. 예: "집중력이 흐트러질 때 다시 몰입하기 어려움" → "재몰입 어려움".
 `.trim()
     case 'step_2_research':
       return `
@@ -916,6 +1155,7 @@ function sanitizeAssistantText(text: string) {
     /이미지\s*placeholder/i,
     /image\s*placeholder/i,
     /페르소나\s*이미지가\s*생성되었습니다/i,
+    /\[시스템\s*참고:[\s\S]*?\]/i,
     /<<AIDEE_STAGE>>[\s\S]*?<<\/AIDEE_STAGE>>/i,
   ]
 
@@ -1270,6 +1510,42 @@ function parseStageMeta(text: string, fallbackStageKey: StageKey) {
   }
 }
 
+function guardSequentialStageMeta(
+  stageMeta: StageMeta,
+  fallbackStageKey: StageKey
+): StageMeta {
+  const currentStageKey = isSameOrNextStage(
+    fallbackStageKey,
+    stageMeta.currentStageKey
+  )
+    ? stageMeta.currentStageKey
+    : fallbackStageKey
+
+  const nextStageKey = isSameOrNextStage(currentStageKey, stageMeta.nextStageKey)
+    ? stageMeta.nextStageKey
+    : currentStageKey
+
+  const transition =
+    stageMeta.transition &&
+    currentStageKey !== nextStageKey &&
+    getNextStageKey(currentStageKey) === nextStageKey
+
+  if (
+    currentStageKey === stageMeta.currentStageKey &&
+    nextStageKey === stageMeta.nextStageKey &&
+    transition === stageMeta.transition
+  ) {
+    return stageMeta
+  }
+
+  return {
+    currentStageKey,
+    nextStageKey,
+    transition,
+    reason: `blocked_non_sequential_${stageMeta.reason}`,
+  }
+}
+
 function inferStageTransitionFromText({
   currentStageKey,
   text,
@@ -1280,6 +1556,8 @@ function inferStageTransitionFromText({
   const transitionHints = [
     /다음 단계로 진행/i,
     /다음 단계로 이어/i,
+    /다음 단계로 넘어/i,
+    /STEP\s*[2-6](?:으로|에)\s*(?:넘어가|진입|이동)/i,
     /이 단계는 여기까지/i,
     /단계가 완료/i,
   ]
@@ -1293,9 +1571,13 @@ function inferStageTransitionFromText({
   const nextStageKey = getNextStageKey(currentStageKey)
   if (
     !nextStageKey ||
-    !['step_2_research', 'step_3_direction', 'step_5_design'].includes(
-      currentStageKey
-    )
+    ![
+      'step_1_idea',
+      'step_2_persona',
+      'step_2_research',
+      'step_3_direction',
+      'step_5_design',
+    ].includes(currentStageKey)
   ) {
     return null
   }
@@ -1335,6 +1617,7 @@ function inferCurrentStageFromText(text: string): StageKey | null {
       'step_6_rfp',
     ],
     [/STEP\s*3(?:으로|에)\s*(?:넘어왔|진입|들어왔|이동)/i, 'step_3_direction'],
+    [/STEP\s*2(?:으로|에)\s*(?:넘어왔|넘어가|진입|들어왔|이동)/i, 'step_2_persona'],
     [/STEP\s*4(?:으로|에)\s*(?:넘어왔|진입|들어왔|이동)/i, 'step_4_style'],
     [/STEP\s*5(?:으로|에)\s*(?:넘어왔|진입|들어왔|이동)/i, 'step_5_design'],
     [/STEP\s*6(?:으로|에)\s*(?:넘어왔|진입|들어왔|이동)/i, 'step_6_rfp'],
@@ -1755,6 +2038,8 @@ export async function POST(req: Request) {
       }
     }
 
+    stageMeta = guardSequentialStageMeta(stageMeta, currentStageKey)
+
     let finalText = normalizeChoiceFormatting(sanitizeAssistantText(cleanedText))
     const modelPrintedNanoBananaPlaceholder =
       hasNanoBananaPlaceholder(cleanedText) ||
@@ -1775,11 +2060,37 @@ export async function POST(req: Request) {
       finalText = getStyleReferenceIntro(generatedImagePayload?.images.length ?? 3)
     }
 
+    const personaContextForCard = [buildConversationText(messages), finalText].join(
+      '\n\n'
+    )
+    const shouldHandlePersonaCardCandidate =
+      !expertCall &&
+      currentStageKey === 'step_2_persona' &&
+      (isPersonaCardText(finalText) || isPersonaSummaryDraftText(finalText))
+
+    if (
+      shouldHandlePersonaCardCandidate &&
+      !getPersonaClarificationStatus(personaContextForCard).isComplete
+    ) {
+      finalText = buildPersonaClarificationQuestion(personaContextForCard)
+    } else if (
+      shouldHandlePersonaCardCandidate &&
+      !isPersonaCardText(finalText) &&
+      isPersonaSummaryDraftText(finalText)
+    ) {
+      finalText = buildPersonaCardTextFromDraft(finalText)
+    }
+
     if (
       !generatedImagePayload &&
       !expertCall &&
       currentStageKey === 'step_2_persona' &&
-      (isPersonaCardText(finalText) || isPersonaImagePlaceholderText(cleanedText))
+      getPersonaClarificationStatus(
+        [buildConversationText(messages), finalText].join('\n\n')
+      ).isComplete &&
+      (isPersonaCardText(finalText) ||
+        isPersonaImagePlaceholderText(cleanedText) ||
+        isPersonaImagePlaceholderText(finalText))
     ) {
       try {
         generatedImagePayload = await generateNanoBananaImages({
@@ -1885,6 +2196,7 @@ export async function POST(req: Request) {
     }
 
     if (
+      canRequestRfpStage(currentStageKey) &&
       (stageMeta.currentStageKey === 'step_6_rfp' ||
         stageMeta.nextStageKey === 'step_6_rfp' ||
         modelPromisedRfpWithoutDocument(finalText)) &&
@@ -1911,6 +2223,7 @@ export async function POST(req: Request) {
     }
 
     const shouldGenerateRfpJson =
+      canRequestRfpStage(currentStageKey) &&
       (stageMeta.currentStageKey === 'step_6_rfp' ||
         stageMeta.nextStageKey === 'step_6_rfp' ||
         stageMeta.nextStageKey === 'step_5_rfp') &&
@@ -1952,7 +2265,8 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
 
     if (
       inferredCurrentStageKey &&
-      inferredCurrentStageKey !== stageMeta.currentStageKey
+      inferredCurrentStageKey !== stageMeta.currentStageKey &&
+      isSameOrNextStage(stageMeta.currentStageKey, inferredCurrentStageKey)
     ) {
       stageMeta = {
         currentStageKey: inferredCurrentStageKey,
@@ -1963,6 +2277,8 @@ ${JSON.stringify(rfpObjectResult.object, null, 2)}
     } else if (inferredStageMeta) {
       stageMeta = inferredStageMeta
     }
+
+    stageMeta = guardSequentialStageMeta(stageMeta, currentStageKey)
 
     return new Response(finalText, {
       headers: {

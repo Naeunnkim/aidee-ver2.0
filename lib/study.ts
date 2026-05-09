@@ -116,6 +116,32 @@ export function getNextStageKey(stageKey: StageKey) {
   return NEXT_STAGE_KEY_MAP[stageKey] ?? null
 }
 
+export function isSameOrNextStage(
+  currentStageKey: StageKey,
+  targetStageKey: StageKey
+) {
+  return (
+    currentStageKey === targetStageKey ||
+    getNextStageKey(currentStageKey) === targetStageKey
+  )
+}
+
+export function canRequestRfpStage(currentStageKey: StageKey) {
+  return (
+    currentStageKey === 'step_5_design' ||
+    currentStageKey === 'step_6_rfp' ||
+    currentStageKey === 'step_5_rfp'
+  )
+}
+
+export function canRequestCompanyStage(currentStageKey: StageKey) {
+  return (
+    currentStageKey === 'step_6_rfp' ||
+    currentStageKey === 'step_6_company' ||
+    currentStageKey === 'step_5_rfp'
+  )
+}
+
 export function getStageKeysForSidebarIndex(sidebarIndex: number) {
   return STAGE_DEFINITIONS.filter(
     (stage) => stage.sidebarIndex === sidebarIndex

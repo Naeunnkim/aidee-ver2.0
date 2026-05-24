@@ -24,11 +24,11 @@ import { type RfpDocument, extractRfpJsonBlock } from '@/lib/rfp'
 import { saveGeneratedProjectThumbnail } from '@/lib/project-thumbnail'
 import { createClient } from '@/lib/supabase/client'
 import {
+  PROCESS_STEPS,
   SIDEBAR_STEPS,
   STAGE_DEFINITIONS,
-  canRequestCompanyStage,
-  canRequestRfpStage,
   getNextStageKey,
+  getProcessStepForStage,
   getSidebarStepIndex,
   getStageKeysForSidebarIndex,
   isKnownStageKey,
@@ -54,7 +54,35 @@ type ChatApiMessage = {
   content: string
 }
 
-type ForceImageGeneration = 'initial_design' | 'design_revision'
+type ChatChoice = {
+  key: 'A' | 'B' | 'C'
+  label: string
+  value: string
+}
+
+type ForceImageGeneration =
+  | 'initial_design'
+  | 'design_revision'
+  | 'problem_statements_visualization'
+  | 'experience_keywords_visualization'
+  | 'relationship_keywords_visualization'
+  | 'market_size_visualization'
+  | 'consumption_keywords_visualization'
+  | 'brand_positioning_visualization'
+  | 'style_reference_options'
+  | 'style_moodboard_visualization'
+  | 'persona_visualization'
+
+type PersonaArtifactKind =
+  | 'problem_statements'
+  | 'experience_keywords'
+  | 'relationship_keywords'
+  | 'persona'
+
+type DirectionArtifactKind =
+  | 'market_size'
+  | 'consumption_keywords'
+  | 'brand_positioning'
 
 type StageTimelineItem = {
   stage_key: StageKey
@@ -104,8 +132,8 @@ function buildChatApiMessages(messages: ChatMessage[]): ChatApiMessage[] {
         ? [
             '',
             `[시스템 참고: 이 assistant 응답에는 ${generatedImagePurpose} 이미지 ${generatedImageCount}장이 생성되어 있었습니다.]`,
-            generatedImagePurpose === 'design' && generatedImageCount >= 3
-              ? '[시스템 참고: STEP5 초기 디자인 3안 세트가 이미 제시되었습니다. 이후에는 같은 3안 세트를 반복 생성하지 말고 사용자가 선택한 1안을 발전시키거나 확정 처리하세요.]'
+            generatedImagePurpose === 'design' && generatedImageCount >= 4
+              ? '[시스템 참고: STEP5 초기 디자인 4안 세트가 이미 제시되었습니다. 이후에는 같은 4안 세트를 반복 생성하지 말고 사용자가 선택한 1안을 발전시키거나 확정 처리하세요.]'
               : '',
           ]
             .filter(Boolean)
@@ -125,8 +153,430 @@ function stripInternalBlocksForDisplay(text: string) {
       /\n?<<\s*AIDEE[-_ ]?(?:IMAGES|RFP_JSON)\s*>>[\s\S]*?(?:<<\s*\/\s*AIDEE[-_ ]?(?:IMAGES|RFP_JSON)\s*>>|$)/gi,
       ''
     )
+    .replace(
+      /\n?<<AIDEE_PERSONA_FLOW_CARD:[\s\S]*?<<\/AIDEE_PERSONA_FLOW_CARD>>/g,
+      ''
+    )
+    .replace(
+      /\n?<<AIDEE_DIRECTION_WIDGETS>>[\s\S]*?<<\/AIDEE_DIRECTION_WIDGETS>>/g,
+      ''
+    )
+    .replace(
+      /\n?<<AIDEE_DIRECTION_CARD:[\s\S]*?<<\/AIDEE_DIRECTION_CARD>>/g,
+      ''
+    )
+    .replace(
+      /\n?<<AIDEE_STYLE_KEYWORD_PICKER>>[\s\S]*?<<\/AIDEE_STYLE_KEYWORD_PICKER>>/g,
+      ''
+    )
     .replace(/\n?\[시스템\s*참고:[\s\S]*?\]/gi, '')
     .trim()
+}
+
+function splitAssistantChoices(content: string): {
+  displayContent: string
+  choices: ChatChoice[]
+} {
+  const lines = content.replace(/\r\n/g, '\n').split('\n')
+  const choiceLinePattern = /^(?:[-•*]\s*)?([ABC])\.\s+(.+)$/
+  const nonChoiceLabels = [
+    /^User$/i,
+    /^Behavior Map$/i,
+    /^Correlation Analysis$/i,
+    /^Problem$/i,
+    /^Success$/i,
+    /^Decision$/i,
+    /^프로젝트 개요$/,
+    /^페르소나$/,
+    /^타겟 리서치$/,
+  ]
+  const removableLineIndexes = new Set<number>()
+  let choices: ChatChoice[] = []
+  let candidateGroup: Array<ChatChoice & { lineIndex: number }> = []
+
+  const flushCandidateGroup = () => {
+    const keys = candidateGroup.map((choice) => choice.key).join('')
+    const hasInteractiveChoiceGroup =
+      candidateGroup.length === 3 && keys === 'ABC'
+
+    if (hasInteractiveChoiceGroup) {
+      choices = [
+        ...choices,
+        ...candidateGroup.map((choice) => ({
+          key: choice.key,
+          label: choice.label,
+          value: choice.value,
+        })),
+      ]
+      candidateGroup.forEach((choice) => removableLineIndexes.add(choice.lineIndex))
+
+      const firstChoiceLineIndex = candidateGroup[0]?.lineIndex
+      const previousLineIndex =
+        typeof firstChoiceLineIndex === 'number' ? firstChoiceLineIndex - 1 : -1
+
+      if (/^\s*선택지\s*:?\s*$/.test(lines[previousLineIndex] ?? '')) {
+        removableLineIndexes.add(previousLineIndex)
+      }
+    }
+
+    candidateGroup = []
+  }
+
+  lines.forEach((line, index) => {
+    const trimmedLine = line.trim()
+    const inlineChoiceMatch = trimmedLine.match(
+      /^A\.\s*(.+?)\s*\/\s*B\.\s*(.+?)\s*\/\s*C\.\s*(.+)$/
+    )
+    const match = trimmedLine.match(choiceLinePattern)
+
+    if (inlineChoiceMatch) {
+      flushCandidateGroup()
+      const inlineChoices = inlineChoiceMatch.slice(1, 4).map((label, labelIndex) => {
+        const key = ['A', 'B', 'C'][labelIndex] as ChatChoice['key']
+        const normalizedLabel = label.trim()
+
+        return {
+          key,
+          label: normalizedLabel,
+          value: `${key}. ${normalizedLabel}`,
+        }
+      })
+
+      choices = [...choices, ...inlineChoices]
+      removableLineIndexes.add(index)
+      return
+    }
+
+    if (!match) {
+      if (!trimmedLine && candidateGroup.length > 0) {
+        return
+      }
+
+      flushCandidateGroup()
+      return
+    }
+
+    const key = match[1] as ChatChoice['key']
+    const label = match[2].trim()
+    const isSectionLabel = nonChoiceLabels.some((pattern) => pattern.test(label))
+
+    if (isSectionLabel) {
+      flushCandidateGroup()
+      return
+    }
+
+    candidateGroup.push({
+      key,
+      label,
+      value: `${key}. ${label}`,
+      lineIndex: index,
+    })
+  })
+  flushCandidateGroup()
+
+  if (choices.length === 0) {
+    return {
+      displayContent: content,
+      choices: [],
+    }
+  }
+
+  const displayContent = lines
+    .filter((_, index) => !removableLineIndexes.has(index))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
+  return {
+    displayContent,
+    choices,
+  }
+}
+
+function buildFallbackHintChoices(content: string): ChatChoice[] {
+  const normalized = content.replace(/\s+/g, ' ')
+
+  const makeChoices = (labels: [string, string, string]): ChatChoice[] =>
+    labels.map((label, index) => {
+      const key = ['A', 'B', 'C'][index] as ChatChoice['key']
+
+      return {
+        key,
+        label,
+        value: `${key}. ${label}`,
+      }
+    })
+
+  if (/구체적인\s*모습|추가\s*설명|형태|색감|재질|사용\s*장면/.test(normalized)) {
+    return makeChoices([
+      '형태나 재질 중심으로 설명할게요',
+      '사용 장면과 분위기 중심으로 설명할게요',
+      '아직 구체적인 모습은 없어요',
+    ])
+  }
+
+  if (/누가|사용자|타겟|나이|직업|페르소나/.test(normalized)) {
+    return makeChoices([
+      'Aidee가 적합한 사용자를 추천해주세요',
+      '제가 생각한 사용자층을 설명할게요',
+      '아직 모르겠어요',
+    ])
+  }
+
+  if (/기존에 사용하던 방법|불편했던 점|방해 요소/.test(normalized)) {
+    return makeChoices([
+      '알림이나 유혹 때문에 쉽게 이탈해요',
+      '루틴을 시작하거나 유지하기 어려워요',
+      '시간 조절이 잘 되지 않아요',
+    ])
+  }
+
+  if (/해결해주었으면|가장 중요한 문제|Needs/i.test(normalized)) {
+    return makeChoices([
+      '재몰입 시간을 줄여주면 좋겠어요',
+      '집중과 휴식을 스스로 조절하고 싶어요',
+      '책상 위 루틴을 자연스럽게 만들고 싶어요',
+    ])
+  }
+
+  if (/감정|평온함|개운함|성취감|안정감/.test(normalized)) {
+    return makeChoices([
+      '평온함과 안정감을 느끼면 좋겠어요',
+      '개운함과 성취감을 느끼면 좋겠어요',
+      '부담 없이 차분해지면 좋겠어요',
+    ])
+  }
+
+  if (/행동|루틴|재몰입|시간 인식|자기조절/.test(normalized)) {
+    return makeChoices([
+      '집중 루틴이 자연스럽게 생기면 좋겠어요',
+      '끊긴 뒤 다시 몰입하기 쉬워지면 좋겠어요',
+      '시간을 더 잘 인식하고 조절하면 좋겠어요',
+    ])
+  }
+
+  if (/관계|스마트폰|책상|시간|알림|이탈|흐름|리듬/.test(normalized)) {
+    return makeChoices([
+      '방해 요소와 거리를 두게 만들고 싶어요',
+      '책상을 안정적인 몰입 공간으로 만들고 싶어요',
+      '시간의 흐름과 전환을 인식하게 하고 싶어요',
+    ])
+  }
+
+  if (/언제|순간|상황|맥락|사용\s*전|사용\s*중|사용\s*후/.test(normalized)) {
+    return makeChoices([
+      '일상에서 반복되는 상황으로 잡아주세요',
+      '특별한 사용 상황으로 잡아주세요',
+      '아직 모르겠어요',
+    ])
+  }
+
+  if (/우선|기준|고를|선택|중요|가치/.test(normalized)) {
+    return makeChoices([
+      '실용성과 기능을 우선하고 싶어요',
+      '디자인과 감성을 우선하고 싶어요',
+      '아직 우선순위를 정하지 못했어요',
+    ])
+  }
+
+  return makeChoices([
+    '아직 잘 모르겠어요. Aidee가 추천해주세요',
+    '현재 정보만으로 진행해주세요',
+    '제가 직접 설명을 더 추가할게요',
+  ])
+}
+
+function isAssistantQuestion(content: string) {
+  return /[?？]\s*$|알려주세요|말씀해주세요|선택해주세요|확인해주세요|진행할까요|있나요|어떤.+요\?/m.test(
+    content.trim()
+  )
+}
+
+function isStageProceedPrompt(content: string) {
+  return /다음으로\s+STEP\s+\d+[\s\S]*진행할까요\?\s*$/m.test(content.trim())
+}
+
+function getStageKeyFromProceedPrompt(content: string): StageKey | null {
+  const match = content.match(/다음으로\s+STEP\s+(\d+)/)
+  const stepIndex = match ? Number(match[1]) : Number.NaN
+
+  if (Number.isNaN(stepIndex)) {
+    return null
+  }
+
+  return (
+    PROCESS_STEPS.find((step) => step.index === stepIndex)?.stageKeys[0] ??
+    null
+  )
+}
+
+function getPersonaArtifactKind(content: string): PersonaArtifactKind | null {
+  if (/##\s*Problem Statements/i.test(content)) {
+    return 'problem_statements'
+  }
+
+  if (/##\s*Keywords:\s*Experience/i.test(content)) {
+    return 'experience_keywords'
+  }
+
+  if (/##\s*Keywords:\s*Relationship/i.test(content)) {
+    return 'relationship_keywords'
+  }
+
+  if (
+    /##\s*Persona Summary/i.test(content) ||
+    /Demographic Info|Persona Story|Problem & Needs|Current Behavior|Lifestyle Context|Relationship Keyword/i.test(
+      content
+    )
+  ) {
+    return 'persona'
+  }
+
+  return null
+}
+
+function getPersonaArtifactForce(
+  kind: PersonaArtifactKind
+): ForceImageGeneration {
+  switch (kind) {
+    case 'problem_statements':
+      return 'problem_statements_visualization'
+    case 'experience_keywords':
+      return 'experience_keywords_visualization'
+    case 'relationship_keywords':
+      return 'relationship_keywords_visualization'
+    case 'persona':
+      return 'persona_visualization'
+  }
+}
+
+function extractPersonaFlowCard(content: string):
+  | {
+      kind: Exclude<PersonaArtifactKind, 'persona'>
+      summary: string
+    }
+  | null {
+  const match = content.match(
+    /<<AIDEE_PERSONA_FLOW_CARD:(problem_statements|experience_keywords|relationship_keywords)>>\s*([\s\S]*?)\s*<<\/AIDEE_PERSONA_FLOW_CARD>>/
+  )
+
+  if (!match) {
+    return null
+  }
+
+  return {
+    kind: match[1] as Exclude<PersonaArtifactKind, 'persona'>,
+    summary: match[2].trim(),
+  }
+}
+
+function stripPersonaFlowCard(content: string) {
+  return content
+    .replace(
+      /<<AIDEE_PERSONA_FLOW_CARD:(?:problem_statements|experience_keywords|relationship_keywords)>>\s*[\s\S]*?\s*<<\/AIDEE_PERSONA_FLOW_CARD>>\s*/g,
+      ''
+    )
+    .trim()
+}
+
+function hasDirectionWidgets(content: string) {
+  return /<<AIDEE_DIRECTION_WIDGETS>>[\s\S]*?<<\/AIDEE_DIRECTION_WIDGETS>>/.test(
+    content
+  )
+}
+
+function extractDirectionCard(content: string):
+  | {
+      kind: DirectionArtifactKind
+      summary: string
+    }
+  | null {
+  const match = content.match(
+    /<<AIDEE_DIRECTION_CARD:(market_size|consumption_keywords|brand_positioning)>>\s*([\s\S]*?)\s*<<\/AIDEE_DIRECTION_CARD>>/
+  )
+
+  if (!match) {
+    return null
+  }
+
+  return {
+    kind: match[1] as DirectionArtifactKind,
+    summary: match[2].trim(),
+  }
+}
+
+function stripDirectionInternalBlocks(content: string) {
+  return content
+    .replace(
+      /<<AIDEE_DIRECTION_WIDGETS>>[\s\S]*?<<\/AIDEE_DIRECTION_WIDGETS>>\s*/g,
+      ''
+    )
+    .replace(
+      /<<AIDEE_DIRECTION_CARD:(?:market_size|consumption_keywords|brand_positioning)>>\s*[\s\S]*?\s*<<\/AIDEE_DIRECTION_CARD>>\s*/g,
+      ''
+    )
+    .trim()
+}
+
+function getDirectionResearchKind(content: string): DirectionArtifactKind | null {
+  if (/##\s*시장\s*규모\s*리서치/i.test(content)) {
+    return 'market_size'
+  }
+
+  if (/##\s*소비\s*트렌드\s*리서치/i.test(content)) {
+    return 'consumption_keywords'
+  }
+
+  if (/##\s*경쟁사\s*리서치/i.test(content)) {
+    return 'brand_positioning'
+  }
+
+  return null
+}
+
+function getDirectionArtifactForce(
+  kind: DirectionArtifactKind
+): ForceImageGeneration {
+  switch (kind) {
+    case 'market_size':
+      return 'market_size_visualization'
+    case 'consumption_keywords':
+      return 'consumption_keywords_visualization'
+    case 'brand_positioning':
+      return 'brand_positioning_visualization'
+  }
+}
+
+function hasStyleKeywordPicker(content: string) {
+  return /<<AIDEE_STYLE_KEYWORD_PICKER>>[\s\S]*?<<\/AIDEE_STYLE_KEYWORD_PICKER>>/.test(
+    content
+  )
+}
+
+function stripStyleKeywordPicker(content: string) {
+  return content
+    .replace(
+      /<<AIDEE_STYLE_KEYWORD_PICKER>>[\s\S]*?<<\/AIDEE_STYLE_KEYWORD_PICKER>>\s*/g,
+      ''
+    )
+    .trim()
+}
+
+function isStyleReferenceProposal(content: string) {
+  return /##\s*선택한\s*스타일\s*레퍼런스/i.test(content)
+}
+
+function isPersonaSummaryText(content: string) {
+  return (
+    Boolean(getPersonaArtifactKind(content)) ||
+    /사용자\s*정리|사용\s*상황|핵심\s*문제|성공\s*기준|선택\s*기준/.test(
+      content
+    ) ||
+    content.includes('Persona Card') ||
+    (content.includes('User') &&
+      content.includes('Problem') &&
+      content.includes('Decision'))
+  )
 }
 
 function isLikelyImageGenerationTurn({
@@ -141,7 +591,7 @@ function isLikelyImageGenerationTurn({
     ''
 
   if (stageKey === 'step_4_style') {
-    return !/([1-3])\s*번|이미지\s*([1-3])|레퍼런스\s*([1-3])|선택|확정/.test(
+    return /스타일\s*키워드\s*선택\s*완료|감정\s*키워드|색감\s*키워드|형태\s*키워드|촉감\s*키워드|시각화하기/i.test(
       lastUserMessage
     )
   }
@@ -402,6 +852,575 @@ function parsePersonaData(content: string) {
   return hasMinimumData ? parsed : null
 }
 
+function parsePersonaSummaryData(content: string) {
+  const normalizedContent = content.replace(/\r\n/g, '\n')
+  const finalPersonaLabels = [
+    'Demographic Info',
+    'Persona Story',
+    'Problem & Needs',
+    'Current Behavior',
+    'Lifestyle Context',
+    'Relationship Keyword',
+  ]
+  const sectionLabels = [
+    '사용자 정리',
+    '사용 상황',
+    '핵심 문제',
+    '성공 기준',
+    '선택 기준',
+  ]
+
+  const cleanLine = (line: string) =>
+    line
+      .replace(/^#{1,6}\s*/, '')
+      .replace(/\*\*/g, '')
+      .replace(/^[-•]\s*/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+  const extractLabeledSection = (label: string, labels: string[]) => {
+    const escapedLabels = labels.map((sectionLabel) =>
+      sectionLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    )
+    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const otherLabels = escapedLabels
+      .filter((sectionLabel) => sectionLabel !== escapedLabel)
+      .join('|')
+    const regex = new RegExp(
+      `(?:^|\\n)\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?${escapedLabel}(?:\\*\\*)?\\s*\\n([\\s\\S]*?)(?=\\n\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?(?:${otherLabels})(?:\\*\\*)?\\s*\\n|$)`,
+      'i'
+    )
+    const match = normalizedContent.match(regex)
+
+    if (!match) {
+      return []
+    }
+
+    return match[1]
+      .split('\n')
+      .map(cleanLine)
+      .filter(Boolean)
+      .filter((line) => !labels.includes(line))
+      .filter((line) => !/시각화하기 버튼|Persona Card가 만들어집니다/.test(line))
+  }
+
+  if (/Demographic Info|Persona Story|Problem & Needs/i.test(normalizedContent)) {
+    const demographicInfo = extractLabeledSection(
+      'Demographic Info',
+      finalPersonaLabels
+    )
+    const personaStory = extractLabeledSection('Persona Story', finalPersonaLabels)
+    const problemNeeds = extractLabeledSection(
+      'Problem & Needs',
+      finalPersonaLabels
+    )
+    const currentBehavior = extractLabeledSection(
+      'Current Behavior',
+      finalPersonaLabels
+    )
+    const lifestyleContext = extractLabeledSection(
+      'Lifestyle Context',
+      finalPersonaLabels
+    )
+    const relationshipKeyword = extractLabeledSection(
+      'Relationship Keyword',
+      finalPersonaLabels
+    )
+    const hasMinimumData =
+      demographicInfo.length > 0 ||
+      personaStory.length > 0 ||
+      problemNeeds.length > 0 ||
+      currentBehavior.length > 0 ||
+      lifestyleContext.length > 0 ||
+      relationshipKeyword.length > 0
+
+    if (!hasMinimumData) {
+      return null
+    }
+
+    return {
+      user: demographicInfo,
+      behaviorMap: currentBehavior,
+      correlationAnalysis: relationshipKeyword,
+      problem: problemNeeds,
+      success: personaStory.map((tag) => ({
+        tag,
+        desc: '',
+      })),
+      decision: lifestyleContext,
+      demographicInfo,
+      personaStory,
+      problemNeeds,
+      currentBehavior,
+      lifestyleContext,
+      relationshipKeyword,
+      imageUrl: '',
+    }
+  }
+
+  const extractSection = (label: string) => {
+    const otherLabels = sectionLabels
+      .filter((sectionLabel) => sectionLabel !== label)
+      .join('|')
+    const regex = new RegExp(
+      `(?:^|\\n)\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?${label}(?:\\*\\*)?\\s*\\n([\\s\\S]*?)(?=\\n\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?(?:${otherLabels})(?:\\*\\*)?\\s*\\n|$)`,
+      'i'
+    )
+    const match = normalizedContent.match(regex)
+
+    if (!match) {
+      return []
+    }
+
+    return match[1]
+      .split('\n')
+      .map(cleanLine)
+      .filter(Boolean)
+      .filter((line) => !sectionLabels.includes(line))
+  }
+
+  const user = extractSection('사용자 정리')
+  const behaviorMap = extractSection('사용 상황')
+  const problem = extractSection('핵심 문제')
+  const success = extractSection('성공 기준').map((tag) => ({
+    tag,
+    desc: '',
+  }))
+  const decision = extractSection('선택 기준')
+
+  const hasMinimumData =
+    user.length > 0 ||
+    behaviorMap.length > 0 ||
+    problem.length > 0 ||
+    success.length > 0 ||
+    decision.length > 0
+
+  if (!hasMinimumData) {
+    return null
+  }
+
+  return {
+    user,
+    behaviorMap,
+    correlationAnalysis: ['사용 맥락 기반 니즈'],
+    problem,
+    success,
+    decision,
+    imageUrl: '',
+  }
+}
+
+function parsePersonaVisualData(content: string) {
+  return parsePersonaData(content) ?? parsePersonaSummaryData(content)
+}
+
+function PersonaFlowCard({
+  kind,
+  summary,
+}: {
+  kind: Exclude<PersonaArtifactKind, 'persona'>
+  summary: string
+}) {
+  const titleMap: Record<Exclude<PersonaArtifactKind, 'persona'>, string> = {
+    problem_statements: 'Problem Statements',
+    experience_keywords: 'Keywords: Experience',
+    relationship_keywords: 'Keywords: Relationship',
+  }
+  const accentClassMap: Record<
+    Exclude<PersonaArtifactKind, 'persona'>,
+    string
+  > = {
+    problem_statements: 'border-blue-200 bg-blue-50/60 text-blue-700',
+    experience_keywords: 'border-emerald-200 bg-emerald-50/60 text-emerald-700',
+    relationship_keywords: 'border-violet-200 bg-violet-50/60 text-violet-700',
+  }
+  const body = summary
+    .replace(new RegExp(`^##\\s*${titleMap[kind]}\\s*`, 'i'), '')
+    .split('\n')
+    .filter((line) => !/아래의 시각화하기 버튼/.test(line))
+    .join('\n')
+    .trim()
+
+  return (
+    <div className="my-3 w-full max-w-[602px] rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-base font-bold text-neutral-900">
+          {titleMap[kind]}
+        </h3>
+        <span
+          className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${accentClassMap[kind]}`}
+        >
+          STEP 2
+        </span>
+      </div>
+      <div className="prose prose-sm prose-p:my-0 prose-li:my-1 prose-strong:text-neutral-900 max-w-none text-sm leading-6 text-slate-700">
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+          {body}
+        </ReactMarkdown>
+      </div>
+    </div>
+  )
+}
+
+function DirectionResearchWidgets({
+  disabled,
+  onSelect,
+}: {
+  disabled: boolean
+  onSelect: (kind: DirectionArtifactKind) => void
+}) {
+  const widgets: Array<{
+    kind: DirectionArtifactKind
+    index: string
+    title: string
+    description: string
+  }> = [
+    {
+      kind: 'market_size',
+      index: '1',
+      title: '시장 규모',
+      description: 'TAM/SAM/SOM 관점으로 진입 시장을 봅니다.',
+    },
+    {
+      kind: 'consumption_keywords',
+      index: '2',
+      title: '소비 트렌드',
+      description: '구매 동기와 소비 키워드를 정리합니다.',
+    },
+    {
+      kind: 'brand_positioning',
+      index: '3',
+      title: '경쟁사',
+      description: '경쟁 구도와 브랜드 포지션을 비교합니다.',
+    },
+  ]
+
+  return (
+    <div className="my-3 grid w-full max-w-[680px] grid-cols-1 gap-3 sm:grid-cols-3">
+      {widgets.map((widget) => (
+        <button
+          key={widget.kind}
+          type="button"
+          disabled={disabled}
+          onClick={() => onSelect(widget.kind)}
+          className="min-h-[112px] rounded-lg border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <span className="mb-3 flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 text-sm font-bold text-white">
+            {widget.index}
+          </span>
+          <span className="block text-sm font-bold text-neutral-900">
+            {widget.title}
+          </span>
+          <span className="mt-1 block text-xs font-medium leading-5 text-slate-500">
+            {widget.description}
+          </span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function DirectionResearchCard({
+  kind,
+  summary,
+}: {
+  kind: DirectionArtifactKind
+  summary: string
+}) {
+  const titleMap: Record<DirectionArtifactKind, string> = {
+    market_size: 'Tam Sam Som',
+    consumption_keywords: 'Keywords:Consumption',
+    brand_positioning: 'Positioning Map: Brand',
+  }
+  const accentClassMap: Record<DirectionArtifactKind, string> = {
+    market_size: 'border-cyan-200 bg-cyan-50/70 text-cyan-700',
+    consumption_keywords:
+      'border-amber-200 bg-amber-50/70 text-amber-700',
+    brand_positioning: 'border-rose-200 bg-rose-50/70 text-rose-700',
+  }
+  const body = summary
+    .replace(new RegExp(`^##\\s*${titleMap[kind]}\\s*`, 'i'), '')
+    .replace(/^##\s*(?:시장\s*규모|소비\s*트렌드|경쟁사)\s*리서치\s*/i, '')
+    .split('\n')
+    .filter((line) => !/아래의 시각화하기 버튼/.test(line))
+    .join('\n')
+    .trim()
+
+  return (
+    <div className="my-3 w-full max-w-[680px] rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-base font-bold text-neutral-900">
+          {titleMap[kind]}
+        </h3>
+        <span
+          className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${accentClassMap[kind]}`}
+        >
+          STEP 3
+        </span>
+      </div>
+      <div className="prose prose-sm prose-p:my-0 prose-li:my-1 prose-strong:text-neutral-900 max-w-none text-sm leading-6 text-slate-700">
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+          {body}
+        </ReactMarkdown>
+      </div>
+    </div>
+  )
+}
+
+const STYLE_KEYWORD_GROUPS = [
+  {
+    key: 'emotion',
+    title: '1. 이 제품을 사용할 때 어떤 기분이 들었으면 좋겠나요?',
+    label: '감정 키워드',
+    keywords: [
+      '평온한',
+      '개운한',
+      '성취감 있는',
+      '안정적인',
+      '차분한',
+      '산뜻한',
+      '따뜻한',
+      '집중되는',
+      '가벼운',
+      '정돈된',
+      '믿음직한',
+      '섬세한',
+      '명료한',
+      '편안한',
+      '리듬감 있는',
+      '기분 전환',
+      '몰입감 있는',
+      '부담 없는',
+      '고요한',
+      '활력 있는',
+      '절제된',
+      '부드러운',
+      '신뢰감 있는',
+      '영감을 주는',
+      '상쾌한',
+      '자기조절',
+      '균형감 있는',
+      '친근한',
+      '프리미엄한',
+      '일상적인',
+    ],
+  },
+  {
+    key: 'color',
+    title: '2. 제품의 색감은 어떤 분위기에 가까우면 좋을까요?',
+    label: '색감 키워드',
+    keywords: [
+      '뉴트럴',
+      '웜 그레이',
+      '쿨 그레이',
+      '오프화이트',
+      '크림 톤',
+      '소프트 블루',
+      '딥 블루',
+      '세이지 그린',
+      '올리브',
+      '민트',
+      '라이트 베이지',
+      '샌드',
+      '차콜',
+      '블랙 포인트',
+      '실버',
+      '라벤더',
+      '코랄',
+      '테라코타',
+      '머스타드',
+      '파우더 핑크',
+      '모노톤',
+      '저채도',
+      '고명도',
+      '매트 컬러',
+      '반투명 톤',
+      '자연색',
+      '우드 톤',
+      '메탈릭',
+      '클린 화이트',
+      '포인트 컬러',
+    ],
+  },
+  {
+    key: 'shape',
+    title: '3. 제품의 형태는 어떤 인상에 가까우면 좋을까요?',
+    label: '형태 키워드',
+    keywords: [
+      '둥근',
+      '간결한',
+      '슬림한',
+      '컴팩트한',
+      '단단한',
+      '유선형',
+      '기하학적',
+      '부드러운 모서리',
+      '납작한',
+      '세로형',
+      '가로형',
+      '모듈형',
+      '쌓이는',
+      '접히는',
+      '손에 잡히는',
+      '오브제 같은',
+      '조형적인',
+      '균형 잡힌',
+      '비대칭',
+      '대칭적인',
+      '미니멀',
+      '아이코닉',
+      '직관적인',
+      '공간 절약',
+      '스탠드형',
+      '플랫한',
+      '입체적인',
+      '부피감 있는',
+      '가벼워 보이는',
+      '안정감 있는',
+    ],
+  },
+  {
+    key: 'touch',
+    title: '4. 제품의 표면과 촉감은 어떤 느낌이면 좋을까요?',
+    label: '촉감 키워드',
+    keywords: [
+      '매트한',
+      '부드러운',
+      '보송한',
+      '차가운',
+      '따뜻한',
+      '매끈한',
+      '세밀한',
+      '러버라이즈드',
+      '패브릭',
+      '우드',
+      '세라믹',
+      '메탈',
+      '무광 플라스틱',
+      '반투명',
+      '미끄럼 방지',
+      '그립감 있는',
+      '탄성 있는',
+      '단단한',
+      '가벼운',
+      '묵직한',
+      '자연 질감',
+      '샌딩감',
+      '소프트 터치',
+      '프리미엄 마감',
+      '생활 방수',
+      '스크래치에 강한',
+      '지문이 덜 남는',
+      '촉촉한 광택',
+      '조용한 클릭감',
+      '손때가 편한',
+    ],
+  },
+] as const
+
+function StyleKeywordPicker({
+  disabled,
+  onSubmit,
+}: {
+  disabled: boolean
+  onSubmit: (text: string) => void
+}) {
+  const [selectedKeywords, setSelectedKeywords] = useState<
+    Record<string, string[]>
+  >({})
+  const maxSelection = 5
+
+  const toggleKeyword = (groupKey: string, keyword: string) => {
+    setSelectedKeywords((prev) => {
+      const current = prev[groupKey] ?? []
+      const exists = current.includes(keyword)
+      const next = exists
+        ? current.filter((item) => item !== keyword)
+        : current.length >= maxSelection
+          ? current
+          : [...current, keyword]
+
+      return {
+        ...prev,
+        [groupKey]: next,
+      }
+    })
+  }
+
+  const canSubmit = STYLE_KEYWORD_GROUPS.every(
+    (group) => (selectedKeywords[group.key] ?? []).length > 0
+  )
+
+  const submit = () => {
+    if (!canSubmit || disabled) {
+      return
+    }
+
+    const summary = STYLE_KEYWORD_GROUPS.map((group) => {
+      const values = selectedKeywords[group.key] ?? []
+      return `${group.label}: ${values.join(', ')}`
+    }).join('\n')
+
+    onSubmit(`스타일 키워드 선택 완료\n${summary}`)
+  }
+
+  return (
+    <div className="my-3 w-full max-w-[760px] rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="space-y-5">
+        {STYLE_KEYWORD_GROUPS.map((group) => {
+          const selected = selectedKeywords[group.key] ?? []
+
+          return (
+            <section key={group.key} className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-bold text-neutral-900">
+                  {group.title}
+                </h3>
+                <span className="text-xs font-semibold text-slate-400">
+                  {selected.length}/{maxSelection}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {group.keywords.map((keyword) => {
+                  const isSelected = selected.includes(keyword)
+                  const isBlocked =
+                    !isSelected && selected.length >= maxSelection
+
+                  return (
+                    <button
+                      key={`${group.key}-${keyword}`}
+                      type="button"
+                      disabled={disabled || isBlocked}
+                      onClick={() => toggleKeyword(group.key, keyword)}
+                      className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                        isSelected
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-slate-100 text-slate-600 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-40'
+                      }`}
+                    >
+                      {keyword}
+                    </button>
+                  )
+                })}
+              </div>
+            </section>
+          )
+        })}
+      </div>
+      <div className="mt-4 flex justify-end">
+        <button
+          type="button"
+          disabled={disabled || !canSubmit}
+          onClick={submit}
+          className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          스타일 분위기 제안받기
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function ExpertAvatar({
   expertKey,
   selected = false,
@@ -472,6 +1491,7 @@ function ExpertAvatar({
 
 function getStageExperts(stageKey: StageKey): ExpertKey[] {
   switch (stageKey) {
+    case 'step_0_start':
     case 'step_1_idea':
       return ['planner']
     case 'step_2_persona':
@@ -665,12 +1685,10 @@ function RfpActionPanel({
   isDownloadingRfp,
   isLoading,
   onDownload,
-  onCompanyConnect,
 }: {
   isDownloadingRfp: boolean
   isLoading: boolean
   onDownload: () => void
-  onCompanyConnect: () => void
 }) {
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -681,14 +1699,6 @@ function RfpActionPanel({
         className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {isDownloadingRfp ? 'RFP 생성 중...' : 'RFP 다운로드'}
-      </button>
-      <button
-        type="button"
-        onClick={onCompanyConnect}
-        disabled={isLoading}
-        className="rounded-full bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        협력업체 연결
       </button>
     </div>
   )
@@ -712,7 +1722,7 @@ export default function ChatPage({
   const [isInitialLoading, setIsInitialLoading] = useState(true)
   const [isDownloadingRfp, setIsDownloadingRfp] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
-  const [currentStageKey, setCurrentStageKey] = useState<StageKey>('step_1_idea')
+  const [currentStageKey, setCurrentStageKey] = useState<StageKey>('step_0_start')
   const [activeExpert, setActiveExpert] = useState<ExpertKey>('aidee')
   const [latestRfpJson, setLatestRfpJson] = useState<RfpDocument | null>(null)
   const [latestRfpContent, setLatestRfpContent] = useState<string | null>(null)
@@ -725,6 +1735,17 @@ export default function ChatPage({
   const [isExpertPickerOpen, setIsExpertPickerOpen] = useState(false)
   const [pendingNextStageKey, setPendingNextStageKey] =
     useState<StageKey | null>(null)
+  const [hintModalMessageId, setHintModalMessageId] = useState<string | null>(
+    null
+  )
+  const [confirmedPersonaMessageIds, setConfirmedPersonaMessageIds] = useState<
+    Record<string, boolean>
+  >({})
+  const [visualizedPersonaMessageIds, setVisualizedPersonaMessageIds] = useState<
+    Record<string, boolean>
+  >({})
+  const [visualizedDirectionMessageIds, setVisualizedDirectionMessageIds] =
+    useState<Record<string, boolean>>({})
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const searchParams = useSearchParams()
@@ -735,6 +1756,12 @@ export default function ChatPage({
   const uiStageKey = pendingNextStageKey ?? currentStageKey
   const activeSidebarIndex = getSidebarStepIndex(uiStageKey)
   const currentStageExperts = getStageExperts(uiStageKey)
+  const hasProcessGuideMessage = messages.some(
+    (message) =>
+      message.role === 'assistant' && message.content.includes('## 전체 프로세스')
+  )
+  const shouldShowProcessPanel =
+    currentStageKey !== 'step_0_start' || hasProcessGuideMessage
   const scrollToSidebarStep = useCallback((sidebarIndex: number) => {
     const node = scrollRef.current
     if (!node) {
@@ -755,9 +1782,6 @@ export default function ChatPage({
 
     node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' })
   }, [])
-  const currentStageExpertLabels = currentStageExperts
-    .map((expert) => getExpertDefinition(expert).label)
-    .join(', ')
   const expertSuggestionCandidates = selectableExperts.filter(
     (expert) => !currentStageExperts.includes(expert.key)
   )
@@ -1040,8 +2064,20 @@ export default function ChatPage({
     async (response: Response, aiContent: string) => {
       const currentStageHeader = response.headers.get('x-aidee-current-stage')
       const nextStageHeader = response.headers.get('x-aidee-next-stage')
-      const transitionHeader = response.headers.get('x-aidee-transition')
-      const reasonHeader = response.headers.get('x-aidee-reason') ?? 'transition'
+      const nextStageFromContent = getStageKeyFromProceedPrompt(aiContent)
+      const nextStageCandidate =
+        nextStageHeader && isKnownStageKey(nextStageHeader)
+          ? nextStageHeader
+          : nextStageFromContent
+
+      if (
+        nextStageCandidate &&
+        nextStageCandidate !== currentStageKey &&
+        isSameOrNextStage(currentStageKey, nextStageCandidate)
+      ) {
+        setPendingNextStageKey(nextStageCandidate)
+        return
+      }
 
       if (
         currentStageHeader &&
@@ -1049,29 +2085,13 @@ export default function ChatPage({
         currentStageHeader !== currentStageKey &&
         isSameOrNextStage(currentStageKey, currentStageHeader)
       ) {
-        await transitionStage(currentStageHeader, `${reasonHeader}_resync`)
+        setPendingNextStageKey(currentStageHeader)
         return
       }
 
-      if (
-        transitionHeader === 'yes' &&
-        nextStageHeader &&
-        isKnownStageKey(nextStageHeader)
-      ) {
-        if (
-          nextStageHeader !== currentStageKey &&
-          isSameOrNextStage(currentStageKey, nextStageHeader)
-        ) {
-          await transitionStage(nextStageHeader, reasonHeader)
-        }
-        return
-      }
-
-      if (currentStageKey === 'step_1_idea' && parsePersonaData(aiContent)) {
-        await transitionStage('step_2_persona', 'persona_generated')
-      }
+      setPendingNextStageKey(null)
     },
-    [currentStageKey, transitionStage]
+    [currentStageKey]
   )
 
   useEffect(() => {
@@ -1486,16 +2506,17 @@ export default function ChatPage({
     )
 
     if (aiContent.trim()) {
-      await insertMessage({
-        role: 'assistant',
-        content: aiContent,
-        activeAgent: expertForRequest,
-      })
-    }
-
-    await applyStageHeaders(response, normalizedMessage.content)
-    setLoadingLabelOverride(null)
+    await insertMessage({
+      role: 'assistant',
+      content: aiContent,
+      activeAgent: expertForRequest,
+    })
   }
+
+  await applyStageHeaders(response, normalizedMessage.content)
+  setLoadingLabelOverride(null)
+  return normalizedMessage
+}
 
   const selectExpert = (expert: ExpertKey) => {
     if (isLoading) {
@@ -1526,13 +2547,13 @@ export default function ChatPage({
     }
   }
 
-  const requestNextStage = async () => {
+  const requestNextStage = async (targetStageKey?: StageKey | null) => {
     if (isLoading) {
       return
     }
 
     const candidateStageKey =
-      pendingNextStageKey ?? getNextStageKey(currentStageKey)
+      targetStageKey ?? pendingNextStageKey ?? getNextStageKey(currentStageKey)
     const nextStageKey =
       candidateStageKey && isSameOrNextStage(currentStageKey, candidateStageKey)
         ? candidateStageKey
@@ -1545,7 +2566,7 @@ export default function ChatPage({
     const userMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: '다음 단계로 진행해줘.',
+      content: '다음 단계',
       active_agent: 'aidee',
       created_at: new Date().toISOString(),
       stage_key: nextStageKey,
@@ -1574,21 +2595,8 @@ export default function ChatPage({
     }
   }
 
-  const getIntentStageKey = (text: string, fallbackStageKey: StageKey) => {
-    if (
-      /협력\s*업체|업체\s*연결|업체\s*추천|파트너|vendor|company/i.test(text) &&
-      canRequestCompanyStage(fallbackStageKey)
-    ) {
-      return 'step_6_company'
-    }
-
-    if (
-      /rfp|제안요청서|제안\s*요청서|문서\s*생성|pdf/i.test(text) &&
-      canRequestRfpStage(fallbackStageKey)
-    ) {
-      return 'step_6_rfp'
-    }
-
+  const getIntentStageKey = (_text: string, fallbackStageKey: StageKey) => {
+    void _text
     return fallbackStageKey
   }
 
@@ -1642,23 +2650,24 @@ export default function ChatPage({
     }
   }
 
-  const sendPersonaAction = async (actionText: string) => {
-    if (isLoading) {
+  const sendChatAction = async (actionText: string) => {
+    if (!actionText.trim() || isLoading || !sessionId) {
       return
     }
 
+    const stageKeyForRequest = getIntentStageKey(actionText, currentStageKey)
     const userMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: actionText,
       active_agent: 'aidee',
       created_at: new Date().toISOString(),
-      stage_key: currentStageKey,
+      stage_key: stageKeyForRequest,
     }
-
     const nextMessages = [...messages, userMessage]
 
     setMessages(nextMessages)
+    setIsExpertPickerOpen(false)
     setIsLoading(true)
 
     try {
@@ -1668,31 +2677,272 @@ export default function ChatPage({
         activeAgent: 'aidee',
       })
 
-      let stageKeyForRequest = currentStageKey
-
-      if (actionText === '리서치 진행') {
-        await transitionStage('step_2_research', 'persona_confirmed')
-        stageKeyForRequest = 'step_2_research'
-      } else if (actionText === '페르소나 수정') {
-        await transitionStage('step_2_persona', 'persona_revision_requested')
-        stageKeyForRequest = 'step_2_persona'
-      }
-
       await streamAssistantResponse(nextMessages, stageKeyForRequest, 'aidee')
     } catch (error) {
-      console.error('Persona action failed:', error)
-      setMessages((prev) => [
+      console.error(error)
+    } finally {
+      setLoadingLabelOverride(null)
+      setIsLoading(false)
+    }
+  }
+
+  const handleMoreToSay = async () => {
+    if (isLoading || !sessionId) {
+      return
+    }
+
+    const createdAt = new Date().toISOString()
+    const userMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: '더 하고 싶은 말이 있어요',
+      active_agent: 'aidee',
+      created_at: createdAt,
+      stage_key: currentStageKey,
+    }
+    const assistantMessage = {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content:
+        '좋아요. 이 단계에서 더 반영하고 싶은 내용을 편하게 적어주세요. 말씀해주신 내용을 기준에 함께 반영하겠습니다.',
+      active_agent: 'aidee',
+      created_at: new Date().toISOString(),
+      stage_key: currentStageKey,
+    }
+
+    setPendingNextStageKey(null)
+    setMessages((prev) => [...prev, userMessage, assistantMessage])
+
+    try {
+      await insertMessage({
+        role: 'user',
+        content: userMessage.content,
+        activeAgent: 'aidee',
+      })
+      await insertMessage({
+        role: 'assistant',
+        content: assistantMessage.content,
+        activeAgent: 'aidee',
+      })
+    } catch (error) {
+      console.error(error)
+    }
+  }
+
+  const buildClientStageTransitionPrompt = (nextStageKey: StageKey) => {
+    const step = getProcessStepForStage(nextStageKey)
+
+    return [
+      `다음으로 STEP ${step.index}. ${step.title} 단계로 넘어가겠습니다.`,
+      `이 단계에서는 ${step.description}`,
+      '진행할까요?',
+    ].join('\n')
+  }
+
+  const confirmPersonaCard = async (messageId: string) => {
+    if (isLoading || !sessionId) {
+      return
+    }
+
+    const nextStageKey = 'step_3_direction'
+    const userMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: '페르소나 카드를 확정합니다.',
+      active_agent: 'aidee',
+      created_at: new Date().toISOString(),
+      stage_key: currentStageKey,
+    }
+    const assistantMessage = {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content: buildClientStageTransitionPrompt(nextStageKey),
+      active_agent: 'aidee',
+      created_at: new Date().toISOString(),
+      stage_key: currentStageKey,
+    }
+
+    setConfirmedPersonaMessageIds((prev) => ({
+      ...prev,
+      [messageId]: true,
+    }))
+    setPendingNextStageKey(nextStageKey)
+    setMessages((prev) => [...prev, userMessage, assistantMessage])
+
+    try {
+      await insertMessage({
+        role: 'user',
+        content: userMessage.content,
+        activeAgent: 'aidee',
+      })
+      await insertMessage({
+        role: 'assistant',
+        content: assistantMessage.content,
+        activeAgent: 'aidee',
+      })
+    } catch (error) {
+      console.error(error)
+    }
+  }
+
+  const visualizePersonaArtifact = async (
+    messageId: string,
+    personaContent: string
+  ) => {
+    if (isLoading || !sessionId) {
+      return
+    }
+
+    const artifactKind = getPersonaArtifactKind(personaContent)
+    if (!artifactKind) {
+      return
+    }
+    const forceImageGeneration = getPersonaArtifactForce(artifactKind)
+    const userMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: ['시각화하기', personaContent].join('\n\n'),
+      active_agent: 'aidee',
+      created_at: new Date().toISOString(),
+      stage_key: currentStageKey,
+    }
+    const nextMessages = [...messages, userMessage]
+
+    setMessages(nextMessages)
+    setLoadingLabelOverride(
+      artifactKind === 'persona'
+        ? '페르소나를 시각화하고 있어요.'
+        : '카드를 만들고 있어요.'
+    )
+    setIsLoading(true)
+
+    try {
+      await insertMessage({
+        role: 'user',
+        content: '시각화하기',
+        activeAgent: 'aidee',
+      })
+
+      const responseMessage = await streamAssistantResponse(
+        nextMessages,
+        currentStageKey,
+        'aidee',
+        false,
+        forceImageGeneration
+      )
+
+      if (
+        responseMessage?.generatedImages?.length ||
+        extractPersonaFlowCard(responseMessage?.content ?? '')
+      ) {
+        setVisualizedPersonaMessageIds((prev) => ({
+          ...prev,
+          [messageId]: true,
+        }))
+      }
+    } catch (error) {
+      console.error(error)
+    } finally {
+      setLoadingLabelOverride(null)
+      setIsLoading(false)
+    }
+  }
+
+  const visualizeDirectionArtifact = async (
+    messageId: string,
+    directionContent: string,
+    directionKind: DirectionArtifactKind
+  ) => {
+    if (isLoading || !sessionId) {
+      return
+    }
+
+    const userMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: ['시각화하기', directionContent].join('\n\n'),
+      active_agent: 'aidee',
+      created_at: new Date().toISOString(),
+      stage_key: currentStageKey,
+    }
+    const nextMessages = [...messages, userMessage]
+
+    setMessages(nextMessages)
+    setLoadingLabelOverride('카드를 만들고 있어요.')
+    setIsLoading(true)
+
+    try {
+      await insertMessage({
+        role: 'user',
+        content: '시각화하기',
+        activeAgent: 'aidee',
+      })
+
+      const responseMessage = await streamAssistantResponse(
+        nextMessages,
+        currentStageKey,
+        'aidee',
+        false,
+        getDirectionArtifactForce(directionKind)
+      )
+
+      if (extractDirectionCard(responseMessage?.content ?? '')) {
+        setVisualizedDirectionMessageIds((prev) => ({
+          ...prev,
+          [messageId]: true,
+        }))
+      }
+    } catch (error) {
+      console.error(error)
+    } finally {
+      setLoadingLabelOverride(null)
+      setIsLoading(false)
+    }
+  }
+
+  const visualizeStyleMoodboard = async (
+    messageId: string,
+    styleContent: string
+  ) => {
+    if (isLoading || !sessionId) {
+      return
+    }
+
+    const userMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: ['시각화하기', styleContent].join('\n\n'),
+      active_agent: 'aidee',
+      created_at: new Date().toISOString(),
+      stage_key: currentStageKey,
+    }
+    const nextMessages = [...messages, userMessage]
+
+    setMessages(nextMessages)
+    setLoadingLabelOverride('무드보드를 생성하고 있어요.')
+    setIsLoading(true)
+
+    try {
+      await insertMessage({
+        role: 'user',
+        content: '시각화하기',
+        activeAgent: 'aidee',
+      })
+
+      await streamAssistantResponse(
+        nextMessages,
+        currentStageKey,
+        'aidee',
+        false,
+        'style_moodboard_visualization'
+      )
+
+      setVisualizedDirectionMessageIds((prev) => ({
         ...prev,
-        {
-          id: (Date.now() + 2).toString(),
-          role: 'assistant',
-          content:
-            '리서치 단계로 넘어가는 중 오류가 발생했어요. 다시 한 번 눌러주세요.',
-          active_agent: 'aidee',
-          created_at: new Date().toISOString(),
-          stage_key: currentStageKey,
-        },
-      ])
+        [messageId]: true,
+      }))
+    } catch (error) {
+      console.error(error)
     } finally {
       setLoadingLabelOverride(null)
       setIsLoading(false)
@@ -1701,8 +2951,7 @@ export default function ChatPage({
 
   const sendGeneratedImageSelection = async (
     messageId: string,
-    imageIndex: number,
-    _prompt?: string | null
+    imageIndex: number
   ) => {
     if (isLoading) {
       return
@@ -1710,7 +2959,7 @@ export default function ChatPage({
 
     const actionText = [
       `스타일 레퍼런스 ${imageIndex + 1}번을 선택합니다.`,
-      '이 방향을 기준으로 STEP 5 디자인 제안 단계에서 제품 디자인 시안 3안을 생성해주세요.',
+      '선택한 스타일 레퍼런스를 텍스트로 정리해주세요.',
     ]
       .filter(Boolean)
       .join('\n')
@@ -1741,13 +2990,10 @@ export default function ChatPage({
         activeAgent: 'aidee',
       })
 
-      await transitionStage('step_5_design', 'style_reference_selected')
       await streamAssistantResponse(
         nextMessages,
-        'step_5_design',
-        'aidee',
-        false,
-        'initial_design'
+        currentStageKey,
+        'aidee'
       )
     } catch (error) {
       console.error('Generated image selection failed:', error)
@@ -1777,6 +3023,20 @@ export default function ChatPage({
     )
   }
 
+  const hintModalMessage = hintModalMessageId
+    ? messages.find((message) => message.id === hintModalMessageId)
+    : null
+  const hintModalChoiceSplit =
+    hintModalMessage?.role === 'assistant'
+      ? splitAssistantChoices(hintModalMessage.content)
+      : null
+  const hintModalChoices =
+    hintModalMessage && hintModalChoiceSplit
+      ? hintModalChoiceSplit.choices.length > 0
+        ? hintModalChoiceSplit.choices
+        : buildFallbackHintChoices(hintModalMessage.content)
+      : []
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-white">
       <aside className="flex w-64 shrink-0 justify-center border-r border-gray-200 bg-neutral-50 p-2">
@@ -1805,65 +3065,67 @@ export default function ChatPage({
               </form>
             </div>
 
-            <div className="flex w-60 flex-col gap-1">
-              <div className="text-xs leading-5 font-medium text-slate-500">
-                디자인 프로세스
-              </div>
-              <div className="inline-flex items-start gap-1.5">
-                <div className="inline-flex w-2.5 flex-col items-start">
-                  {SIDEBAR_STEPS.map((_, index) => {
-                    const isActive = index === activeSidebarIndex
-                    const isLast = index === SIDEBAR_STEPS.length - 1
-
-                    return (
-                      <div
-                        key={`dot-${index}`}
-                        className="flex h-8 w-full flex-col items-center gap-px"
-                      >
-                        {index > 0 ? (
-                          <div className="h-3 w-0 outline outline-1 outline-offset-[-0.50px] outline-gray-200" />
-                        ) : null}
-                        <div
-                          className={`h-2.5 w-2.5 rounded-full ${
-                            isActive
-                              ? 'border-2 border-blue-600 bg-white'
-                              : 'bg-gray-200'
-                          }`}
-                        />
-                        {!isLast ? (
-                          <div className="h-3 w-0 outline outline-1 outline-offset-[-0.50px] outline-gray-200" />
-                        ) : null}
-                      </div>
-                    )
-                  })}
+            {shouldShowProcessPanel ? (
+              <div className="flex w-60 flex-col gap-1">
+                <div className="text-xs leading-5 font-medium text-slate-500">
+                  디자인 프로세스
                 </div>
-                <div className="inline-flex w-56 flex-col items-start">
-                  {SIDEBAR_STEPS.map((step, index) => {
-                    const isActive = index === activeSidebarIndex
-                    return (
-                      <button
-                        key={step}
-                        type="button"
-                        onClick={() => scrollToSidebarStep(index)}
-                        className={`inline-flex self-stretch items-center gap-2 rounded-xl py-1.5 text-left transition ${
-                          isActive
-                            ? 'bg-blue-50/70'
-                            : 'hover:bg-gray-50'
-                        }`}
-                      >
+                <div className="inline-flex items-start gap-1.5">
+                  <div className="inline-flex w-2.5 flex-col items-start">
+                    {SIDEBAR_STEPS.map((_, index) => {
+                      const isActive = index === activeSidebarIndex
+                      const isLast = index === SIDEBAR_STEPS.length - 1
+
+                      return (
                         <div
-                          className={`text-sm leading-6 font-medium ${
-                            isActive ? 'text-blue-600' : 'text-gray-300'
+                          key={`dot-${index}`}
+                          className="flex h-8 w-full flex-col items-center gap-px"
+                        >
+                          {index > 0 ? (
+                            <div className="h-3 w-0 outline outline-1 outline-offset-[-0.50px] outline-gray-200" />
+                          ) : null}
+                          <div
+                            className={`h-2.5 w-2.5 rounded-full ${
+                              isActive
+                                ? 'border-2 border-blue-600 bg-white'
+                                : 'bg-gray-200'
+                            }`}
+                          />
+                          {!isLast ? (
+                            <div className="h-3 w-0 outline outline-1 outline-offset-[-0.50px] outline-gray-200" />
+                          ) : null}
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div className="inline-flex w-56 flex-col items-start">
+                    {SIDEBAR_STEPS.map((step, index) => {
+                      const isActive = index === activeSidebarIndex
+                      return (
+                        <button
+                          key={step}
+                          type="button"
+                          onClick={() => scrollToSidebarStep(index)}
+                          className={`inline-flex self-stretch items-center gap-2 rounded-xl py-1.5 text-left transition ${
+                            isActive
+                              ? 'bg-blue-50/70'
+                              : 'hover:bg-gray-50'
                           }`}
                         >
-                          {step}
-                        </div>
-                      </button>
-                    )
-                  })}
+                          <div
+                            className={`text-sm leading-6 font-medium ${
+                              isActive ? 'text-blue-600' : 'text-gray-300'
+                            }`}
+                          >
+                            {index}. {step}
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : null}
 
             <div className="flex w-60 flex-col gap-2">
               <div className="text-xs leading-4 font-medium text-slate-500">
@@ -1947,7 +3209,7 @@ export default function ChatPage({
             <>
               <StageDivider stageKey={currentStageKey} />
               <div className="max-w-[514px] rounded-[24px] rounded-tl-none bg-gray-200 p-5 text-base leading-relaxed font-medium text-neutral-900">
-                안녕하세요! Aidee입니다. 기획 중인 프로젝트를 함께 정리해볼게요.
+                새로운 프로젝트가 시작되었네요! &apos;Aidee&apos;팀과 함께 아이디어를 구체화해보아요.
               </div>
             </>
           ) : null}
@@ -1969,43 +3231,208 @@ export default function ChatPage({
             const shouldShowStageDivider =
               stageSignature !== previousStageSignature
 
-            const isPersonaCard =
+            const personaFlowCard =
+              m.role === 'assistant' ? extractPersonaFlowCard(m.content) : null
+            const directionWidgets =
+              m.role === 'assistant' ? hasDirectionWidgets(m.content) : false
+            const directionCard =
+              m.role === 'assistant' ? extractDirectionCard(m.content) : null
+            const styleKeywordPicker =
+              m.role === 'assistant' ? hasStyleKeywordPicker(m.content) : false
+            const contentForDisplay =
+              m.role === 'assistant'
+                ? stripStyleKeywordPicker(
+                    stripDirectionInternalBlocks(
+                      personaFlowCard
+                        ? stripPersonaFlowCard(m.content)
+                        : m.content
+                    )
+                  )
+                : m.content
+            const personaArtifactKind =
+              m.role === 'assistant' ? getPersonaArtifactKind(m.content) : null
+            const directionResearchKind =
+              m.role === 'assistant' ? getDirectionResearchKind(m.content) : null
+            const isStyleProposal =
+              m.role === 'assistant' && isStyleReferenceProposal(m.content)
+            const personaSummaryData =
+              m.role === 'assistant' ? parsePersonaData(m.content) : null
+            const isPersonaSummary =
               m.role === 'assistant' &&
-              (m.content.includes('Persona Card') ||
-                (m.content.includes('User') &&
-                  m.content.includes('Problem') &&
-                  m.content.includes('Decision')))
+              stageKeyForMessage === 'step_2_persona' &&
+              !personaFlowCard &&
+              (isPersonaSummaryText(m.content) || Boolean(personaSummaryData))
 
             const isRfpMessage =
               m.role === 'assistant' &&
               (m.content.includes('# 제품 제안요청서') ||
                 m.content.includes('## 1. 프로젝트 개요'))
             const isStyleReferenceImageMessage =
-              m.generatedImagePurpose === 'style_reference' ||
-              stageKeyForMessage === 'step_4_style'
+              m.generatedImagePurpose === 'style_reference'
+            const isPersonaVisualizationMessage =
+              m.role === 'assistant' &&
+              m.generatedImagePurpose === 'persona' &&
+              Boolean(m.generatedImages?.length)
+            const personaVisualizationSourceData = isPersonaVisualizationMessage
+              ? messages
+                  .slice(0, index)
+                  .reverse()
+                  .filter(
+                    (message) =>
+                      message.role === 'assistant' &&
+                      message.stage_key === 'step_2_persona'
+                  )
+                  .map((message) => parsePersonaVisualData(message.content))
+                  .find((data) => Boolean(data))
+              : null
+            const assistantChoiceSplit =
+              m.role === 'assistant'
+                ? splitAssistantChoices(contentForDisplay)
+                : { displayContent: m.content, choices: [] }
+            const showProcessConfirmButton =
+              m.role === 'assistant' &&
+              m.id === latestAideeAssistantId &&
+              (!m.active_agent || m.active_agent === 'aidee') &&
+              m.content.includes('## 전체 내용 정리') &&
+              m.content.includes('프로세스 확인하기') &&
+              !hasProcessGuideMessage
+            const stageProceedNextStageKey = getStageKeyFromProceedPrompt(
+              m.content
+            )
+            const promptProceedStageKey =
+              stageProceedNextStageKey &&
+              stageProceedNextStageKey !== currentStageKey &&
+              isSameOrNextStage(currentStageKey, stageProceedNextStageKey)
+                ? stageProceedNextStageKey
+                : null
+            const proceedButtonStageKey =
+              pendingNextStageKey ?? promptProceedStageKey
+            const showStageProceedButtons = Boolean(
+              m.role === 'assistant' &&
+                m.id === latestAideeAssistantId &&
+                (!m.active_agent || m.active_agent === 'aidee') &&
+                proceedButtonStageKey &&
+                isStageProceedPrompt(m.content)
+            )
+            const showHintButton =
+              m.role === 'assistant' &&
+              (!m.active_agent || m.active_agent === 'aidee') &&
+              contentForDisplay.trim() &&
+              !showStageProceedButtons &&
+              !showProcessConfirmButton &&
+              !isPersonaSummary &&
+              !styleKeywordPicker &&
+              !isStyleProposal &&
+              (assistantChoiceSplit.choices.length > 0 ||
+                isAssistantQuestion(contentForDisplay))
+            const personaArtifactWasVisualized = Boolean(
+              personaArtifactKind &&
+                (visualizedPersonaMessageIds[m.id] ||
+                  messages.slice(index + 1).some((message) => {
+                    if (personaArtifactKind === 'persona') {
+                      return (
+                        message.role === 'assistant' &&
+                        message.generatedImagePurpose === 'persona'
+                      )
+                    }
 
-            if (isPersonaCard) {
-              const personaData = parsePersonaData(m.content)
-
-              if (personaData) {
-                const personaCardData = {
-                  ...personaData,
-                  imageUrl: personaData.imageUrl || m.generatedImages?.[0] || '',
-                }
-
-                return (
-                  <div key={m.id} className="space-y-6">
-                    {shouldShowStageDivider ? (
-                      <StageDivider stageKey={stageKeyForMessage} />
-                    ) : null}
-                    <PersonaCard
-                      data={personaCardData}
-                      onProceed={() => sendPersonaAction('리서치 진행')}
-                      onAdjust={() => sendPersonaAction('페르소나 수정')}
-                    />
-                  </div>
+                    const laterCard = extractPersonaFlowCard(message.content)
+                    return laterCard?.kind === personaArtifactKind
+                  }))
+            )
+            const directionResearchWasVisualized = Boolean(
+              directionResearchKind &&
+                (visualizedDirectionMessageIds[m.id] ||
+                  messages.slice(index + 1).some((message) => {
+                    const laterCard = extractDirectionCard(message.content)
+                    return laterCard?.kind === directionResearchKind
+                  }))
+            )
+            const personaCardWasConfirmed = Boolean(
+              confirmedPersonaMessageIds[m.id] ||
+                messages.slice(index + 1).some(
+                  (message) =>
+                    message.role === 'user' &&
+                    message.content.includes('페르소나 카드를 확정합니다')
                 )
-              }
+            )
+
+            if (
+              isPersonaVisualizationMessage &&
+              personaVisualizationSourceData &&
+              m.generatedImages?.[0]
+            ) {
+              return (
+                <div key={m.id} className="space-y-6">
+                  {shouldShowStageDivider ? (
+                    <StageDivider stageKey={stageKeyForMessage} />
+                  ) : null}
+                  <div className="flex flex-col items-start">
+                    <PersonaCard
+                      data={{
+                        ...personaVisualizationSourceData,
+                        imageUrl: m.generatedImages[0],
+                      }}
+                      showActions={false}
+                    />
+                    <div className="max-w-[514px] min-w-0 overflow-hidden rounded-[24px] rounded-tl-none bg-gray-200 p-5 text-base font-medium leading-relaxed text-neutral-900 shadow-sm">
+                      <div className="prose prose-sm prose-p:my-0 prose-p:leading-7 max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere]">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm, remarkBreaks]}
+                        >
+                          {assistantChoiceSplit.displayContent}
+                        </ReactMarkdown>
+                      </div>
+                    </div>
+                    {!personaCardWasConfirmed ? (
+                      <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() => void confirmPersonaCard(m.id)}
+                          className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          확정하기
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() =>
+                            void sendChatAction(
+                              '수정하기: 페르소나 카드 내용을 조금 더 조정하고 싶어요.'
+                            )
+                          }
+                          className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm outline outline-1 outline-gray-200 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          수정하기
+                        </button>
+                      </div>
+                    ) : null}
+                    {showStageProceedButtons ? (
+                      <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() =>
+                            void requestNextStage(proceedButtonStageKey)
+                          }
+                          className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          다음 단계로
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() => void handleMoreToSay()}
+                          className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm outline outline-1 outline-gray-200 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          더 하고 싶은 말이 있어요
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              )
             }
 
             return (
@@ -2033,44 +3460,174 @@ export default function ChatPage({
                       </span>
                     </div>
                   ) : null}
-                  <div
-                    className={`max-w-[514px] min-w-0 overflow-hidden rounded-[24px] p-5 text-base leading-relaxed font-medium shadow-sm ${
-                      m.role === 'user'
-                        ? 'rounded-tr-none bg-gray-100 text-neutral-900'
-                        : 'rounded-tl-none bg-gray-200 text-neutral-900'
-                    }`}
-                  >
-                    <div className="prose prose-sm prose-p:my-0 prose-p:leading-7 prose-li:my-0 prose-headings:mb-3 prose-strong:text-neutral-900 max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere]">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm, remarkBreaks]}
-                        components={{
-                          p: ({ children }) => (
-                            <p className="mb-1 max-w-full break-words leading-7 last:mb-0">
-                              {children}
-                            </p>
-                          ),
-                          ul: ({ children }) => (
-                            <ul className="my-3 max-w-full list-disc space-y-1 pl-5">
-                              {children}
-                            </ul>
-                          ),
-                          ol: ({ children }) => (
-                            <ol className="my-3 max-w-full list-decimal space-y-1 pl-5">
-                              {children}
-                            </ol>
-                          ),
-                          li: ({ children }) => (
-                            <li className="max-w-full break-words leading-5 [&>p]:mb-0 [&>p]:inline">
-                              {children}
-                            </li>
-                          ),
-                          br: () => <br className="block h-1" />,
-                        }}
-                      >
-                        {m.content}
-                      </ReactMarkdown>
+                  {personaFlowCard ? (
+                    <PersonaFlowCard
+                      kind={personaFlowCard.kind}
+                      summary={personaFlowCard.summary}
+                    />
+                  ) : null}
+                  {directionWidgets ? (
+                    <DirectionResearchWidgets
+                      disabled={isLoading}
+                      onSelect={(kind) => {
+                        const labelMap: Record<DirectionArtifactKind, string> = {
+                          market_size: '시장 규모 리서치 보기',
+                          consumption_keywords: '소비 트렌드 리서치 보기',
+                          brand_positioning: '경쟁사 리서치 보기',
+                        }
+
+                        void sendChatAction(labelMap[kind])
+                      }}
+                    />
+                  ) : null}
+                  {directionCard ? (
+                    <DirectionResearchCard
+                      kind={directionCard.kind}
+                      summary={directionCard.summary}
+                    />
+                  ) : null}
+                  {styleKeywordPicker ? (
+                    <StyleKeywordPicker
+                      disabled={isLoading}
+                      onSubmit={(text) => void sendChatAction(text)}
+                    />
+                  ) : null}
+                  {contentForDisplay.trim() ? (
+                    <div
+                      className={`max-w-[514px] min-w-0 overflow-hidden rounded-[24px] p-5 text-base leading-relaxed font-medium shadow-sm ${
+                        m.role === 'user'
+                          ? 'rounded-tr-none bg-gray-100 text-neutral-900'
+                          : 'rounded-tl-none bg-gray-200 text-neutral-900'
+                      }`}
+                    >
+                      <div className="prose prose-sm prose-p:my-0 prose-p:leading-7 prose-li:my-0 prose-headings:mb-3 prose-strong:text-neutral-900 max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere]">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm, remarkBreaks]}
+                          components={{
+                            p: ({ children }) => (
+                              <p className="mb-1 max-w-full break-words leading-7 last:mb-0">
+                                {children}
+                              </p>
+                            ),
+                            ul: ({ children }) => (
+                              <ul className="my-3 max-w-full list-disc space-y-1 pl-5">
+                                {children}
+                              </ul>
+                            ),
+                            ol: ({ children }) => (
+                              <ol className="my-3 max-w-full list-decimal space-y-1 pl-5">
+                                {children}
+                              </ol>
+                            ),
+                            li: ({ children }) => (
+                              <li className="max-w-full break-words leading-5 [&>p]:mb-0 [&>p]:inline">
+                                {children}
+                              </li>
+                            ),
+                            br: () => <br className="block h-1" />,
+                          }}
+                        >
+                          {assistantChoiceSplit.displayContent}
+                        </ReactMarkdown>
+                      </div>
                     </div>
+                  ) : null}
+                {showHintButton ? (
+                  <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={isLoading}
+                      onClick={() => setHintModalMessageId(m.id)}
+                      className="rounded-full bg-white px-3.5 py-2 text-xs font-semibold text-slate-600 shadow-sm outline outline-1 outline-gray-200 transition hover:bg-blue-50 hover:text-blue-700 hover:outline-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      힌트보기
+                    </button>
                   </div>
+                ) : null}
+                {showProcessConfirmButton ? (
+                  <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={isLoading}
+                      onClick={() => void sendChatAction('프로세스 확인하기')}
+                      className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      프로세스 확인하기
+                    </button>
+                  </div>
+                ) : null}
+                {showStageProceedButtons ? (
+                  <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={isLoading}
+                      onClick={() =>
+                        void requestNextStage(proceedButtonStageKey)
+                      }
+                      className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      다음 단계로
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isLoading}
+                      onClick={() => void handleMoreToSay()}
+                      className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm outline outline-1 outline-gray-200 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      더 하고 싶은 말이 있어요
+                    </button>
+                  </div>
+                ) : null}
+                {isPersonaSummary && personaArtifactKind ? (
+                  <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
+                    {!personaArtifactWasVisualized ? (
+                      <button
+                        type="button"
+                        disabled={isLoading}
+                        onClick={() =>
+                          void visualizePersonaArtifact(m.id, m.content)
+                        }
+                        className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        시각화하기
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {directionResearchKind ? (
+                  <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
+                    {!directionResearchWasVisualized ? (
+                      <button
+                        type="button"
+                        disabled={isLoading}
+                        onClick={() =>
+                          void visualizeDirectionArtifact(
+                            m.id,
+                            m.content,
+                            directionResearchKind
+                          )
+                        }
+                        className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        시각화하기
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {isStyleProposal ? (
+                  <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
+                    {!visualizedDirectionMessageIds[m.id] ? (
+                      <button
+                        type="button"
+                        disabled={isLoading}
+                        onClick={() => void visualizeStyleMoodboard(m.id, m.content)}
+                        className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        시각화하기
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
                 {m.role === 'assistant' && m.generatedImages?.length ? (
                   <div className="mt-3 w-full max-w-[760px] space-y-2">
                     <div className="flex items-center justify-between gap-3">
@@ -2107,7 +3664,7 @@ export default function ChatPage({
                           {isStyleReferenceImageMessage ? (
                             <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
                               <span className="text-xs font-medium text-slate-500">
-                                레퍼런스 {index + 1}
+                                스타일 {index + 1}
                               </span>
                               <button
                                 type="button"
@@ -2118,8 +3675,7 @@ export default function ChatPage({
                                 onClick={() =>
                                   void sendGeneratedImageSelection(
                                     m.id,
-                                    index,
-                                    m.generatedImagePrompt
+                                    index
                                   )
                                 }
                                 className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
@@ -2130,7 +3686,7 @@ export default function ChatPage({
                               >
                                 {selectedGeneratedImages[m.id] === index
                                   ? '선택됨'
-                                  : '이 이미지 선택'}
+                                  : '이 스타일 선택'}
                               </button>
                             </div>
                           ) : null}
@@ -2144,7 +3700,6 @@ export default function ChatPage({
                     isDownloadingRfp={isDownloadingRfp}
                     isLoading={isLoading}
                     onDownload={() => void handleRfpDownload()}
-                    onCompanyConnect={() => void requestNextStage()}
                   />
                 ) : null}
                 {m.role === 'assistant' &&
@@ -2381,6 +3936,47 @@ export default function ChatPage({
           </form>
         </footer>
       </main>
+      {hintModalMessage && hintModalChoiceSplit ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/20 px-4 py-6 sm:items-center">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-4 shadow-2xl">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-neutral-900">
+                  답변 힌트
+                </h3>
+                <p className="mt-1 text-xs font-medium leading-5 text-slate-400">
+                  아래 예시 중 가까운 방향을 골라도 되고, 직접 입력해도 됩니다.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHintModalMessageId(null)}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-sm font-semibold text-slate-500 transition hover:bg-slate-200"
+                aria-label="힌트 닫기"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-2">
+              {hintModalChoices.map((choice) => (
+                <button
+                  key={`${hintModalMessage.id}-${choice.key}-${choice.label}`}
+                  type="button"
+                  disabled={isLoading}
+                  onClick={() => {
+                    setHintModalMessageId(null)
+                    void sendChatAction(choice.value)
+                  }}
+                  className="w-full rounded-xl bg-slate-50 px-3 py-2.5 text-left text-sm font-semibold leading-5 text-slate-700 transition hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {choice.key}. {choice.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

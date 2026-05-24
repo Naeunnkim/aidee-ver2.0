@@ -1,4 +1,5 @@
 export type StageKey =
+  | 'step_0_start'
   | 'step_1_idea'
   | 'step_2_persona'
   | 'step_2_research'
@@ -18,80 +19,88 @@ export const STAGE_DEFINITIONS: Array<{
   sidebarIndex: number
 }> = [
   {
-    key: 'step_1_idea',
-    label: '제품 아이디어 & 개발 조건 정리',
-    sidebarLabel: '제품 아이디어&개발 조건 정리',
+    key: 'step_0_start',
+    label: '프로젝트 시작 공통 확인 구간',
+    sidebarLabel: '프로젝트 시작 공통 확인 구간',
     sidebarIndex: 0,
+  },
+  {
+    key: 'step_1_idea',
+    label: '제품 아이디어 및 개발 조건 정리',
+    sidebarLabel: '제품 아이디어 및 개발 조건 정리',
+    sidebarIndex: 1,
   },
   {
     key: 'step_2_persona',
     label: '페르소나 정리',
     sidebarLabel: '사용자 명확화',
-    sidebarIndex: 1,
+    sidebarIndex: 2,
   },
   {
     key: 'step_2_research',
     label: '리서치',
     sidebarLabel: '사용자 명확화',
-    sidebarIndex: 1,
+    sidebarIndex: 2,
   },
   {
     key: 'step_3_direction',
     label: '디자인·기능 방향 정리',
-    sidebarLabel: '디자인·개발 방향성 도출',
-    sidebarIndex: 2,
+    sidebarLabel: '디자인/개발 방향성 도출',
+    sidebarIndex: 3,
   },
   {
     key: 'step_4_definition',
     label: '제품 정의 및 제안 범위 확정',
     sidebarLabel: '스타일 컨셉 도출',
-    sidebarIndex: 3,
+    sidebarIndex: 4,
   },
   {
     key: 'step_4_style',
     label: '스타일 컨셉 도출',
     sidebarLabel: '스타일 컨셉 도출',
-    sidebarIndex: 3,
+    sidebarIndex: 4,
   },
   {
     key: 'step_5_design',
     label: '디자인 제안',
     sidebarLabel: '디자인 제안',
-    sidebarIndex: 4,
+    sidebarIndex: 5,
   },
   {
     key: 'step_5_rfp',
-    label: 'RFP 문서 생성',
-    sidebarLabel: '평가 및 RFP 문서 생성',
-    sidebarIndex: 5,
+    label: '평가 및 제품개발 기획안 생성',
+    sidebarLabel: '평가 및 제품개발 기획안 생성',
+    sidebarIndex: 6,
   },
   {
     key: 'step_6_rfp',
-    label: '평가 및 RFP 문서 생성',
-    sidebarLabel: '평가 및 RFP 문서 생성',
-    sidebarIndex: 5,
+    label: '평가 및 제품개발 기획안 생성',
+    sidebarLabel: '평가 및 제품개발 기획안 생성',
+    sidebarIndex: 6,
   },
   {
     key: 'step_6_company',
     label: '협력업체 연결',
     sidebarLabel: '협력업체 연결',
-    sidebarIndex: 6,
+    sidebarIndex: 7,
   },
 ]
 
 export const SIDEBAR_STEPS = [
-  '제품 아이디어&개발 조건 정리',
+  '프로젝트 시작 공통 확인 구간',
+  '제품 아이디어 및 개발 조건 정리',
   '사용자 명확화',
-  '디자인·개발 방향성 도출',
+  '디자인/개발 방향성 도출',
   '스타일 컨셉 도출',
   '디자인 제안',
-  '평가 및 RFP 문서 생성',
+  '평가 및 제품개발 기획안 생성',
   '협력업체 연결',
 ]
 
 const NEXT_STAGE_KEY_MAP: Record<StageKey, StageKey | null> = {
+  step_0_start: 'step_1_idea',
   step_1_idea: 'step_2_persona',
-  step_2_persona: 'step_2_research',
+  step_2_persona: 'step_3_direction',
   step_2_research: 'step_3_direction',
   step_3_direction: 'step_4_style',
   step_4_style: 'step_5_design',
@@ -101,6 +110,62 @@ const NEXT_STAGE_KEY_MAP: Record<StageKey, StageKey | null> = {
   step_4_definition: 'step_4_style',
   step_5_rfp: 'step_6_company',
 }
+
+export const PROCESS_STEPS: Array<{
+  index: number
+  title: string
+  description: string
+  stageKeys: StageKey[]
+}> = [
+  {
+    index: 0,
+    title: '프로젝트 시작 공통 확인 구간',
+    description: '초기 입력을 Project Card로 정리하고 출발 기준을 맞춥니다.',
+    stageKeys: ['step_0_start'],
+  },
+  {
+    index: 1,
+    title: '제품 아이디어 및 개발 조건 정리',
+    description: '제품 목표, 조건, 제약을 실행 가능한 기획 기준으로 정리합니다.',
+    stageKeys: ['step_1_idea'],
+  },
+  {
+    index: 2,
+    title: '사용자 명확화',
+    description: '이 제품을 누가, 언제, 왜 사용할지 구체화합니다.',
+    stageKeys: ['step_2_persona', 'step_2_research'],
+  },
+  {
+    index: 3,
+    title: '디자인/개발 방향성 도출',
+    description: '가치 우선순위와 기능·개발 방향을 함께 좁힙니다.',
+    stageKeys: ['step_3_direction'],
+  },
+  {
+    index: 4,
+    title: '스타일 컨셉 도출',
+    description: '형태, 색감, 재질의 시각적 방향을 정합니다.',
+    stageKeys: ['step_4_style', 'step_4_definition'],
+  },
+  {
+    index: 5,
+    title: '디자인 제안',
+    description: '선택한 방향을 기준으로 제품 디자인 시안을 제안합니다.',
+    stageKeys: ['step_5_design'],
+  },
+  {
+    index: 6,
+    title: '평가 및 제품개발 기획안 생성',
+    description: '확정된 내용을 평가하고 제품개발 기획안으로 문서화합니다.',
+    stageKeys: ['step_6_rfp', 'step_5_rfp'],
+  },
+  {
+    index: 7,
+    title: '협력업체 연결',
+    description: '제품개발 기획안을 기준으로 협력업체 연결 방향을 정리합니다.',
+    stageKeys: ['step_6_company'],
+  },
+]
 
 export function getSidebarStepIndex(stageKey: string | null | undefined) {
   return (
@@ -114,6 +179,13 @@ export function isKnownStageKey(value: string): value is StageKey {
 
 export function getNextStageKey(stageKey: StageKey) {
   return NEXT_STAGE_KEY_MAP[stageKey] ?? null
+}
+
+export function getProcessStepForStage(stageKey: StageKey) {
+  return (
+    PROCESS_STEPS.find((step) => step.stageKeys.includes(stageKey)) ??
+    PROCESS_STEPS[0]
+  )
 }
 
 export function isSameOrNextStage(

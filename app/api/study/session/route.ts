@@ -52,7 +52,7 @@ export async function POST(request: Request) {
   const initialStageKey: StageKey =
     lastStage?.stage_key && isKnownStageKey(lastStage.stage_key)
       ? lastStage.stage_key
-      : 'step_1_idea'
+      : 'step_0_start'
 
   const { data: session, error: sessionError } = await supabase
     .from('study_sessions')

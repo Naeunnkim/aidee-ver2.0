@@ -15,6 +15,12 @@ type PersonaCardData = {
   problem: string[]
   decision: string[]
   success: SuccessItem[]
+  demographicInfo?: string[]
+  personaStory?: string[]
+  problemNeeds?: string[]
+  currentBehavior?: string[]
+  lifestyleContext?: string[]
+  relationshipKeyword?: string[]
   imageUrl?: string
 }
 
@@ -22,6 +28,7 @@ type PersonaCardProps = {
   data: PersonaCardData
   onAdjust?: () => void
   onProceed?: () => void
+  showActions?: boolean
 }
 
 type CardLayoutProps = {
@@ -41,6 +48,7 @@ export default function PersonaCard({
   data,
   onAdjust,
   onProceed,
+  showActions = true,
 }: PersonaCardProps) {
   const cardRef = useRef<HTMLDivElement>(null)
   const displayCardRef = useRef<HTMLDivElement>(null)
@@ -135,35 +143,73 @@ export default function PersonaCard({
           <CardLayoutWithRef cardRef={cardRef} data={data} mode="screen" />
         </div>
 
-        <div className="relative z-10 flex gap-2">
-          <button
-            type="button"
-            onClick={() => onAdjust?.()}
-            className="rounded-full bg-sky-100 px-4 py-1.5 text-sm font-medium text-sky-600 transition-colors hover:bg-sky-200"
-          >
-            조정하기
-          </button>
-          <button
-            type="button"
-            onClick={() => onProceed?.()}
-            className="rounded-full bg-blue-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
-          >
-            이대로 진행하기
-          </button>
-          <button
-            type="button"
-            onClick={() => onDownload('png')}
-            className="ml-auto rounded-full bg-gray-900 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-black"
-          >
-            저장하기
-          </button>
-        </div>
+        {showActions ? (
+          <div className="relative z-10 flex gap-2">
+            <button
+              type="button"
+              onClick={() => onAdjust?.()}
+              className="rounded-full bg-sky-100 px-4 py-1.5 text-sm font-medium text-sky-600 transition-colors hover:bg-sky-200"
+            >
+              조정하기
+            </button>
+            <button
+              type="button"
+              onClick={() => onProceed?.()}
+              className="rounded-full bg-blue-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+            >
+              이대로 진행하기
+            </button>
+            <button
+              type="button"
+              onClick={() => onDownload('png')}
+              className="ml-auto rounded-full bg-gray-900 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-black"
+            >
+              저장하기
+            </button>
+          </div>
+        ) : null}
       </div>
     </>
   )
 }
 
 const CardLayout = ({ data, cardRef }: CardLayoutWithRefProps) => {
+  const personaStoryFallback = data.success.map((item) =>
+    [item.tag, item.desc].filter(Boolean).join(' - ')
+  )
+  const sections = [
+    {
+      title: '(1) Demographic Info',
+      items: data.demographicInfo?.length ? data.demographicInfo : data.user,
+    },
+    {
+      title: '(2) Persona Story',
+      items: data.personaStory?.length ? data.personaStory : personaStoryFallback,
+    },
+    {
+      title: '(3) Problem & Needs',
+      items: data.problemNeeds?.length ? data.problemNeeds : data.problem,
+    },
+    {
+      title: '(4) Current Behavior',
+      items: data.currentBehavior?.length
+        ? data.currentBehavior
+        : data.behaviorMap,
+    },
+    {
+      title: '(5) Lifestyle Context',
+      items: data.lifestyleContext?.length
+        ? data.lifestyleContext
+        : data.decision,
+    },
+    {
+      title: '(6) Relationship Keyword',
+      items: data.relationshipKeyword?.length
+        ? data.relationshipKeyword
+        : data.correlationAnalysis,
+    },
+  ]
+
   return (
     <div
       ref={cardRef}
@@ -203,32 +249,16 @@ const CardLayout = ({ data, cardRef }: CardLayoutWithRefProps) => {
           </div>
         </div>
 
-        <div className="inline-flex items-start justify-start gap-5 self-stretch">
-          <div className="inline-flex w-32 flex-col items-start justify-start gap-1.5">
-            <MiniSection title="User" items={data.user} />
-            <MiniSection title="Usage" items={data.behaviorMap} />
+        <div className="grid w-[305px] grid-cols-2 gap-x-4 gap-y-1.5">
+          {sections.map((section) => (
             <MiniSection
-              title="Decision"
-              items={data.decision}
-              maxItems={3}
-            />
-          </div>
-
-          <div className="inline-flex w-36 flex-col items-start justify-start gap-1.5">
-            <MiniSection
-              title="Problem"
-              items={data.problem}
+              key={section.title}
+              title={section.title}
+              items={section.items}
               compact
-              maxItems={3}
+              maxItems={2}
             />
-            <MiniSection
-              title="Current Solution"
-              items={data.correlationAnalysis}
-              compact
-              maxItems={3}
-            />
-            <SuccessSection items={data.success} />
-          </div>
+          ))}
         </div>
       </div>
     </div>
@@ -280,54 +310,6 @@ function MiniSection({
           )
         )}
       </div>
-    </section>
-  )
-}
-
-function SuccessSection({ items }: { items: SuccessItem[] }) {
-  const visibleItems = items.slice(0, 3).map((item) => ({
-    tag: item.tag.replace(/\.{2,}|…/g, '').trim(),
-    desc: item.desc.replace(/\.{2,}|…/g, '').trim(),
-  }))
-
-  return (
-    <section className="flex w-full flex-col items-start justify-start gap-0.5">
-      <div className="flex w-full flex-col items-start justify-start gap-px">
-        <h4
-          className="text-center text-[8px] font-bold leading-3"
-          style={{ color: '#2563eb' }}
-        >
-          Success
-        </h4>
-        <div className="h-px w-full" style={{ backgroundColor: '#a1a1aa' }} />
-      </div>
-
-      {visibleItems.map((item, index) => (
-        <div
-          key={`${item.tag}-${item.desc}-${index}`}
-          className="inline-flex w-full items-center justify-start gap-[3px]"
-        >
-          <div
-            className="flex h-2.5 items-center justify-center rounded-[54.5px] px-1"
-            style={{ backgroundColor: '#dbeafe' }}
-          >
-            <span
-              className="max-w-[58px] overflow-hidden text-center text-[4.5px] font-medium leading-[6px]"
-              style={{ color: '#0ea5e9' }}
-            >
-              #{item.tag}
-            </span>
-          </div>
-          {item.desc ? (
-            <span
-              className="flex-1 overflow-hidden text-[4.5px] font-medium leading-[6px]"
-              style={{ color: '#a1a1aa' }}
-            >
-              {item.desc}
-            </span>
-          ) : null}
-        </div>
-      ))}
     </section>
   )
 }

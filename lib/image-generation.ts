@@ -2,7 +2,7 @@ export type GeneratedImageBlock = {
   images: string[]
   prompt: string
   model: string
-  purpose?: 'persona' | 'style_reference' | 'design' | 'thumbnail'
+  purpose?: 'persona' | 'style_reference' | 'moodboard' | 'design' | 'thumbnail'
 }
 
 const DEFAULT_NANO_BANANA_MODEL = 'gemini-2.5-flash-image'

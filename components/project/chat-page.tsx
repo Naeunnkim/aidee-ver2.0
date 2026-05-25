@@ -84,6 +84,18 @@ type DirectionArtifactKind =
   | 'consumption_keywords'
   | 'brand_positioning'
 
+type ProjectDirectionData = {
+  title: string
+  goal: string
+  category: string
+  budgetAndDuration: string
+  size: string
+  features: string
+  usage: string
+  ideaSummary: string
+  referenceSummary: string
+}
+
 type StageTimelineItem = {
   stage_key: StageKey
   entered_at: string
@@ -167,6 +179,14 @@ function stripInternalBlocksForDisplay(text: string) {
     )
     .replace(
       /\n?<<AIDEE_STYLE_KEYWORD_PICKER>>[\s\S]*?<<\/AIDEE_STYLE_KEYWORD_PICKER>>/g,
+      ''
+    )
+    .replace(
+      /\n?<<AIDEE_PROJECT_DIRECTION>>[\s\S]*?<<\/AIDEE_PROJECT_DIRECTION>>/g,
+      ''
+    )
+    .replace(
+      /\n?#\s*Project\s*(?:Card|Direction)\s*[\s\S]*?(?=\n\s*제품의\s*구체적인\s*모습|\n\s*형태,\s*색감|\s*$)/gi,
       ''
     )
     .replace(/\n?\[시스템\s*참고:[\s\S]*?\]/gi, '')
@@ -393,11 +413,25 @@ function isAssistantQuestion(content: string) {
 }
 
 function isStageProceedPrompt(content: string) {
-  return /다음으로\s+STEP\s+\d+[\s\S]*진행할까요\?\s*$/m.test(content.trim())
+  const normalized = content.replace(/\s+/g, ' ').trim()
+  const mentionsProceedQuestion = /진행할까요[?？]?/.test(normalized)
+  const mentionsNextStage =
+    /다음(?:으로| 단계| STEP)/i.test(normalized) ||
+    /STEP\s*\d+[\s\S]*(?:넘어|진행|이동|들어가|시작)/i.test(normalized)
+
+  return mentionsProceedQuestion && mentionsNextStage
 }
 
 function getStageKeyFromProceedPrompt(content: string): StageKey | null {
-  const match = content.match(/다음으로\s+STEP\s+(\d+)/)
+  const normalized = content.replace(/\s+/g, ' ')
+  const stepPatterns = [
+    /다음(?:으로)?\s*STEP\s*(\d+)/i,
+    /다음\s*단계(?:로|으로)?[\s\S]*?STEP\s*(\d+)/i,
+    /STEP\s*(\d+)[\s\S]*?(?:넘어|진행|이동|들어가|시작)/i,
+  ]
+  const match = stepPatterns
+    .map((pattern) => normalized.match(pattern))
+    .find(Boolean)
   const stepIndex = match ? Number(match[1]) : Number.NaN
 
   if (Number.isNaN(stepIndex)) {
@@ -408,6 +442,124 @@ function getStageKeyFromProceedPrompt(content: string): StageKey | null {
     PROCESS_STEPS.find((step) => step.index === stepIndex)?.stageKeys[0] ??
     null
   )
+}
+
+function extractProjectDirectionCard(content: string): ProjectDirectionData | null {
+  const markerMatch = content.match(
+    /<<AIDEE_PROJECT_DIRECTION>>\s*([\s\S]*?)\s*<<\/AIDEE_PROJECT_DIRECTION>>/
+  )
+  const headingMatch =
+    markerMatch ??
+    content.match(
+      /#\s*Project\s*(?:Card|Direction)\s*([\s\S]*?)(?=\n\s*제품의\s*구체적인\s*모습|\n\s*형태,\s*색감|\s*$)/i
+    )
+  const source = headingMatch?.[1]
+
+  if (!source) {
+    return null
+  }
+
+  const fieldLabels = [
+    '프로젝트명',
+    '프로젝트 목표',
+    '제품 카테고리',
+    '예산/기간 범위',
+    '예상 크기',
+    '주요 기능',
+    '최종 활용 목적',
+    '아이디어 정리',
+    '참고 자료',
+  ]
+  const labelSet = new Set(fieldLabels)
+  const values = new Map<string, string>()
+  const cleanLine = (line: string) =>
+    line
+      .replace(/^#{1,6}\s*/, '')
+      .replace(/\*\*/g, '')
+      .replace(/^[-•]\s*/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const lines = source
+    .replace(/^Project\s*Direction\s*/i, '')
+    .split('\n')
+    .map(cleanLine)
+    .filter(Boolean)
+
+  let currentLabel: string | null = null
+
+  for (const line of lines) {
+    if (labelSet.has(line)) {
+      currentLabel = line
+      values.set(currentLabel, '')
+      continue
+    }
+
+    if (!currentLabel || /^Project\s*Direction$/i.test(line)) {
+      continue
+    }
+
+    const previousValue = values.get(currentLabel)
+    values.set(currentLabel, [previousValue, line].filter(Boolean).join(' '))
+  }
+
+  const getValue = (label: string) => values.get(label)?.trim() || '미정'
+  const data = {
+    title: getValue('프로젝트명'),
+    goal: getValue('프로젝트 목표'),
+    category: getValue('제품 카테고리'),
+    budgetAndDuration: getValue('예산/기간 범위'),
+    size: getValue('예상 크기'),
+    features: getValue('주요 기능'),
+    usage: getValue('최종 활용 목적'),
+    ideaSummary: getValue('아이디어 정리'),
+    referenceSummary: getValue('참고 자료'),
+  }
+  const hasMinimumData =
+    data.title !== '미정' ||
+    data.goal !== '미정' ||
+    data.ideaSummary !== '미정'
+
+  return hasMinimumData ? data : null
+}
+
+function stripProjectDirectionCard(content: string) {
+  return content
+    .replace(
+      /<<AIDEE_PROJECT_DIRECTION>>\s*[\s\S]*?\s*<<\/AIDEE_PROJECT_DIRECTION>>\s*/g,
+      ''
+    )
+    .replace(
+      /#\s*Project\s*(?:Card|Direction)\s*[\s\S]*?(?=\n\s*제품의\s*구체적인\s*모습|\n\s*형태,\s*색감|\s*$)/gi,
+      ''
+    )
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function splitProjectDirectionContent(content: string) {
+  const markerMatch = content.match(
+    /<<AIDEE_PROJECT_DIRECTION>>\s*[\s\S]*?\s*<<\/AIDEE_PROJECT_DIRECTION>>/
+  )
+  const match =
+    markerMatch ??
+    content.match(
+      /#\s*Project\s*(?:Card|Direction)\s*[\s\S]*?(?=\n\s*제품의\s*구체적인\s*모습|\n\s*형태,\s*색감|\s*$)/i
+    )
+
+  if (!match || typeof match.index !== 'number') {
+    return {
+      before: '',
+      after: stripProjectDirectionCard(content),
+    }
+  }
+
+  const before = content.slice(0, match.index).trim()
+  const after = content.slice(match.index + match[0].length).trim()
+
+  return {
+    before,
+    after,
+  }
 }
 
 function getPersonaArtifactKind(content: string): PersonaArtifactKind | null {
@@ -1012,6 +1164,74 @@ function parsePersonaSummaryData(content: string) {
 
 function parsePersonaVisualData(content: string) {
   return parsePersonaData(content) ?? parsePersonaSummaryData(content)
+}
+
+function ProjectDirectionCard({ data }: { data: ProjectDirectionData }) {
+  const fields = [
+    { label: '프로젝트 목표', value: data.goal, wide: true },
+    { label: '제품 카테고리', value: data.category },
+    { label: '예산 / 기간', value: data.budgetAndDuration },
+    { label: '예상 크기', value: data.size },
+    { label: '주요 기능', value: data.features },
+    { label: '최종 활용 목적', value: data.usage },
+    { label: '참고 자료', value: data.referenceSummary },
+    { label: '아이디어 정리', value: data.ideaSummary, wide: true },
+  ]
+
+  return (
+    <div className="my-4 w-full max-w-[664px] overflow-x-auto pb-1">
+      <div className="relative h-[292px] w-[492px] overflow-hidden rounded-xl bg-white font-sans shadow-[0px_0px_24px_0px_rgba(0,0,0,0.12)]">
+        <div className="absolute left-0 top-0 flex h-full w-36 flex-col justify-between bg-zinc-200 px-5 py-5">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+              Start Point
+            </p>
+            <h2 className="mt-2 text-xl font-bold leading-6 text-zinc-700">
+              Project Direction
+            </h2>
+          </div>
+          <div>
+            <p className="text-[10px] font-semibold text-zinc-500">프로젝트명</p>
+            <p className="mt-1 max-h-12 overflow-hidden text-sm font-bold leading-5 text-zinc-800">
+              {data.title}
+            </p>
+          </div>
+        </div>
+
+        <div className="absolute left-[166px] top-[14px] grid h-[264px] w-[306px] grid-cols-2 gap-x-3 gap-y-2 overflow-hidden">
+          {fields.map((field) => (
+            <ProjectDirectionField
+              key={field.label}
+              label={field.label}
+              value={field.value}
+              wide={field.wide}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ProjectDirectionField({
+  label,
+  value,
+  wide = false,
+}: {
+  label: string
+  value: string
+  wide?: boolean
+}) {
+  return (
+    <div className={wide ? 'col-span-2' : ''}>
+      <p className="text-[9px] font-semibold leading-3 text-zinc-400">
+        {label}
+      </p>
+      <p className="mt-0.5 max-h-[34px] overflow-hidden text-[11px] font-medium leading-[17px] text-zinc-700">
+        {value}
+      </p>
+    </div>
+  )
 }
 
 function PersonaFlowCard({
@@ -1739,6 +1959,9 @@ export default function ChatPage({
     null
   )
   const [confirmedPersonaMessageIds, setConfirmedPersonaMessageIds] = useState<
+    Record<string, boolean>
+  >({})
+  const [confirmedPersonaFlowCardIds, setConfirmedPersonaFlowCardIds] = useState<
     Record<string, boolean>
   >({})
   const [visualizedPersonaMessageIds, setVisualizedPersonaMessageIds] = useState<
@@ -2785,6 +3008,21 @@ export default function ChatPage({
     }
   }
 
+  const confirmPersonaFlowCard = async (
+    messageId: string,
+    kind: Exclude<PersonaArtifactKind, 'persona'>
+  ) => {
+    if (kind !== 'problem_statements' || isLoading || !sessionId) {
+      return
+    }
+
+    setConfirmedPersonaFlowCardIds((prev) => ({
+      ...prev,
+      [messageId]: true,
+    }))
+    await sendChatAction('Problem Statements 카드를 확정합니다.')
+  }
+
   const visualizePersonaArtifact = async (
     messageId: string,
     personaContent: string
@@ -3231,6 +3469,8 @@ export default function ChatPage({
             const shouldShowStageDivider =
               stageSignature !== previousStageSignature
 
+            const projectDirectionCard =
+              m.role === 'assistant' ? extractProjectDirectionCard(m.content) : null
             const personaFlowCard =
               m.role === 'assistant' ? extractPersonaFlowCard(m.content) : null
             const directionWidgets =
@@ -3239,7 +3479,7 @@ export default function ChatPage({
               m.role === 'assistant' ? extractDirectionCard(m.content) : null
             const styleKeywordPicker =
               m.role === 'assistant' ? hasStyleKeywordPicker(m.content) : false
-            const contentForDisplay =
+            const assistantBaseContent =
               m.role === 'assistant'
                 ? stripStyleKeywordPicker(
                     stripDirectionInternalBlocks(
@@ -3248,6 +3488,16 @@ export default function ChatPage({
                         : m.content
                     )
                   )
+                : m.content
+            const projectDirectionDisplayParts =
+              m.role === 'assistant' && projectDirectionCard
+                ? splitProjectDirectionContent(assistantBaseContent)
+                : null
+            const contentForDisplay =
+              m.role === 'assistant'
+                ? projectDirectionDisplayParts
+                  ? projectDirectionDisplayParts.after
+                  : stripProjectDirectionCard(assistantBaseContent)
                 : m.content
             const personaArtifactKind =
               m.role === 'assistant' ? getPersonaArtifactKind(m.content) : null
@@ -3299,26 +3549,33 @@ export default function ChatPage({
             const stageProceedNextStageKey = getStageKeyFromProceedPrompt(
               m.content
             )
+            const hasStageProceedPrompt =
+              m.role === 'assistant' && isStageProceedPrompt(m.content)
+            const fallbackProceedStageKey =
+              hasStageProceedPrompt && !stageProceedNextStageKey
+                ? getNextStageKey(stageKeyForMessage)
+                : null
             const promptProceedStageKey =
               stageProceedNextStageKey &&
               stageProceedNextStageKey !== currentStageKey &&
-              isSameOrNextStage(currentStageKey, stageProceedNextStageKey)
+              isSameOrNextStage(stageKeyForMessage, stageProceedNextStageKey)
                 ? stageProceedNextStageKey
                 : null
             const proceedButtonStageKey =
-              pendingNextStageKey ?? promptProceedStageKey
+              pendingNextStageKey ?? promptProceedStageKey ?? fallbackProceedStageKey
             const showStageProceedButtons = Boolean(
               m.role === 'assistant' &&
                 m.id === latestAideeAssistantId &&
                 (!m.active_agent || m.active_agent === 'aidee') &&
                 proceedButtonStageKey &&
-                isStageProceedPrompt(m.content)
+                hasStageProceedPrompt
             )
             const showHintButton =
               m.role === 'assistant' &&
               (!m.active_agent || m.active_agent === 'aidee') &&
               contentForDisplay.trim() &&
               !showStageProceedButtons &&
+              !hasStageProceedPrompt &&
               !showProcessConfirmButton &&
               !isPersonaSummary &&
               !styleKeywordPicker &&
@@ -3355,6 +3612,29 @@ export default function ChatPage({
                     message.role === 'user' &&
                     message.content.includes('페르소나 카드를 확정합니다')
                 )
+            )
+            const personaFlowCardWasSuperseded = Boolean(
+              personaFlowCard &&
+                messages.slice(index + 1).some((message) => {
+                  const laterCard = extractPersonaFlowCard(message.content)
+                  return laterCard?.kind === personaFlowCard.kind
+                })
+            )
+            const personaFlowCardWasConfirmed = Boolean(
+              personaFlowCard &&
+                (confirmedPersonaFlowCardIds[m.id] ||
+                  messages.slice(index + 1).some(
+                    (message) =>
+                      message.role === 'user' &&
+                      message.content.includes(
+                        `${personaFlowCard.kind === 'problem_statements' ? 'Problem Statements' : ''} 카드를 확정합니다`
+                      )
+                  ))
+            )
+            const showProblemStatementsCardActions = Boolean(
+              personaFlowCard?.kind === 'problem_statements' &&
+                !personaFlowCardWasConfirmed &&
+                !personaFlowCardWasSuperseded
             )
 
             if (
@@ -3460,11 +3740,51 @@ export default function ChatPage({
                       </span>
                     </div>
                   ) : null}
+                  {projectDirectionDisplayParts?.before ? (
+                    <div className="max-w-[514px] min-w-0 overflow-hidden rounded-[24px] rounded-tl-none bg-gray-200 p-5 text-base font-medium leading-relaxed text-neutral-900 shadow-sm">
+                      <div className="prose prose-sm prose-p:my-0 prose-p:leading-7 max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere]">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm, remarkBreaks]}
+                        >
+                          {projectDirectionDisplayParts.before}
+                        </ReactMarkdown>
+                      </div>
+                    </div>
+                  ) : null}
+                  {projectDirectionCard ? (
+                    <ProjectDirectionCard data={projectDirectionCard} />
+                  ) : null}
                   {personaFlowCard ? (
                     <PersonaFlowCard
                       kind={personaFlowCard.kind}
                       summary={personaFlowCard.summary}
                     />
+                  ) : null}
+                  {showProblemStatementsCardActions && personaFlowCard ? (
+                    <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={isLoading}
+                        onClick={() =>
+                          void sendChatAction(
+                            'Problem Statements 카드를 수정하고 싶어요.'
+                          )
+                        }
+                        className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm outline outline-1 outline-gray-200 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        수정하기
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isLoading}
+                        onClick={() =>
+                          void confirmPersonaFlowCard(m.id, personaFlowCard.kind)
+                        }
+                        className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        확정하기
+                      </button>
+                    </div>
                   ) : null}
                   {directionWidgets ? (
                     <DirectionResearchWidgets

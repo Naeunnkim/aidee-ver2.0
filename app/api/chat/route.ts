@@ -448,7 +448,8 @@ function buildProjectCardResponse({
   return [
     "새로운 프로젝트가 시작되었네요! 'Aidee'팀과 함께 아이디어를 구체화해보아요.",
     '',
-    '# Project Card',
+    '<<AIDEE_PROJECT_DIRECTION>>',
+    'Project Direction',
     '',
     `**프로젝트명**  `,
     snapshot.title,
@@ -476,6 +477,7 @@ function buildProjectCardResponse({
     '',
     `**참고 자료**  `,
     referenceSummary,
+    '<</AIDEE_PROJECT_DIRECTION>>',
     '',
     '제품의 구체적인 모습이나 추가 설명이 있다면 편하게 알려주세요.',
     '형태, 색감, 재질, 사용 장면, 꼭 들어갔으면 하는 디테일처럼 떠오르는 내용만 적어주셔도 좋아요.',
@@ -545,7 +547,9 @@ function appendStageTransitionPrompt(text: string, nextStageKey: StageKey) {
 function hasProjectCardMessage(messages: NormalizedMessage[]) {
   return messages.some(
     (message) =>
-      message.role === 'assistant' && /#\s*Project Card/i.test(message.content)
+      message.role === 'assistant' &&
+      (/<<AIDEE_PROJECT_DIRECTION>>/i.test(message.content) ||
+        /#\s*Project\s*(?:Card|Direction)/i.test(message.content))
   )
 }
 
@@ -1126,9 +1130,12 @@ const PERSONA_FLOW_CARD_LABELS: Record<PersonaFlowArtifactKind, string> = {
 }
 
 const PERSONA_PROBLEM_QUESTIONS = {
-  situation: /이\s*사용자는\s*보통\s*언제,\s*어디에서\s*이\s*문제를\s*가장\s*자주\s*경험하나요\?/i,
-  discomfort: /기존에\s*사용하던\s*방법에서\s*가장\s*불편했던\s*점은\s*무엇인가요\?/i,
-  needs: /이\s*제품이\s*해결해주었으면\s*하는\s*가장\s*중요한\s*문제는\s*무엇인가요\?/i,
+  triggerScene: /이\s*제품을\s*떠올리게\s*된\s*장면은\s*어떤\s*순간에\s*가까운가요\?/i,
+  userAction: /그\s*순간\s*사용자는\s*무엇을\s*하려던\s*중인가요\?/i,
+  interruption: /그\s*흐름을\s*가장\s*자주\s*흐트러뜨리는\s*것은\s*무엇인가요\?/i,
+  workaround: /지금은\s*그\s*상황을\s*어떻게\s*넘기고\s*있나요\?/i,
+  residue: /그\s*방식이\s*반복될\s*때\s*결국\s*어떤\s*문제가\s*남나요\?/i,
+  desiredChange: /문제가\s*줄어든다면\s*사용자의\s*하루나\s*행동은\s*어떻게\s*달라질까요\?/i,
 }
 
 const PERSONA_EXPERIENCE_QUESTIONS = {
@@ -1196,6 +1203,58 @@ function hasPersonaFlowCard(
   const marker = `<<AIDEE_PERSONA_FLOW_CARD:${kind}>>`
 
   return messages.some((message) => message.content.includes(marker))
+}
+
+function hasPersonaFlowCardConfirmation(
+  messages: NormalizedMessage[],
+  kind: PersonaFlowArtifactKind
+) {
+  const label = PERSONA_FLOW_CARD_LABELS[kind].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const confirmationPattern = new RegExp(`${label}\\s*카드[\\s\\S]*확정`, 'i')
+
+  return messages.some(
+    (message) => message.role === 'user' && confirmationPattern.test(message.content)
+  )
+}
+
+function isProblemStatementsConfirmation(text: string) {
+  return /Problem\s*Statements\s*카드[\s\S]*확정|문제\s*정리\s*카드[\s\S]*확정/i.test(
+    text
+  )
+}
+
+function isProblemStatementsRevisionRequest(text: string) {
+  return /Problem\s*Statements\s*카드[\s\S]*(수정|보완|다시|고치|바꾸)|문제\s*정리[\s\S]*(수정|보완|다시|고치|바꾸)/i.test(
+    text
+  )
+}
+
+function hasRecentProblemStatementsRevisionPrompt(messages: NormalizedMessage[]) {
+  const latestAssistant = messages
+    .slice()
+    .reverse()
+    .find((message) => message.role === 'assistant')
+
+  return Boolean(
+    latestAssistant &&
+      /Problem\s*Statements\s*카드에서\s*수정하고\s*싶은\s*부분/i.test(
+        latestAssistant.content
+      )
+  )
+}
+
+function buildProblemStatementsRevisionQuestion() {
+  return buildPersonaQuestion({
+    intro:
+      '좋아요. Problem Statements 카드는 확정하지 않고 수정 상태로 둘게요.',
+    question:
+      'Problem Statements 카드에서 수정하고 싶은 부분을 어떤 방향으로 바꾸면 좋을까요?',
+    choices: [
+      '사용 장면을 더 구체적으로 바꾸고 싶어요',
+      '방해 요소나 불편함을 더 정확히 바꾸고 싶어요',
+      '원하는 해결 방향을 다시 정리하고 싶어요',
+    ],
+  })
 }
 
 function extractSummaryFromVisualizationCommand(text: string) {
@@ -1304,9 +1363,8 @@ function buildPersonaQuestion({
 function buildProblemSituationQuestion() {
   return buildPersonaQuestion({
     intro:
-      'STEP 2에서는 먼저 사용자가 겪는 문제를 현재 상황, 불편함, 근본적 니즈로 나누어 볼게요.',
-    question:
-      '문제(현재 상황): 이 사용자는 보통 언제, 어디에서 이 문제를 가장 자주 경험하나요?',
+      'STEP 2에서는 먼저 한 사람의 사용 장면을 천천히 따라가며 문제의 맥락을 잡아볼게요.',
+    question: '이 제품을 떠올리게 된 장면은 어떤 순간에 가까운가요?',
     choices: [
       '업무나 학습을 시작하려는 순간',
       '집중이 끊긴 뒤 다시 돌아오려는 순간',
@@ -1315,44 +1373,138 @@ function buildProblemSituationQuestion() {
   })
 }
 
-function buildProblemDiscomfortQuestion() {
+function buildProblemUserActionQuestion() {
   return buildPersonaQuestion({
-    intro: '좋아요. 이제 현재 방식에서 반복적으로 생기는 방해 요소를 좁혀볼게요.',
-    question: '불편함: 기존에 사용하던 방법에서 가장 불편했던 점은 무엇인가요?',
+    intro: '좋아요. 그 장면에서 사용자의 행동을 조금 더 가까이 보겠습니다.',
+    question: '그 순간 사용자는 무엇을 하려던 중인가요?',
     choices: [
-      '스마트폰 알림이나 유혹에 쉽게 이탈함',
-      '집중 루틴을 시작하거나 유지하기 어려움',
-      '시간이 흐르는 감각을 놓쳐 조절이 어려움',
+      '해야 할 일을 시작하려던 중',
+      '끊긴 흐름으로 다시 돌아가려던 중',
+      '휴식에서 몰입으로 전환하려던 중',
     ],
   })
 }
 
-function buildProblemNeedsQuestion() {
+function buildProblemInterruptionQuestion() {
   return buildPersonaQuestion({
-    intro: '좋아요. 마지막으로 사용자가 진짜 원하는 해결 방향을 확인할게요.',
-    question:
-      'Needs: 이 제품이 해결해주었으면 하는 가장 중요한 문제는 무엇인가요?',
+    intro: '좋아요. 이제 그 흐름이 어디서 흔들리는지 살펴볼게요.',
+    question: '그 흐름을 가장 자주 흐트러뜨리는 것은 무엇인가요?',
     choices: [
-      '다시 몰입하기까지 걸리는 시간을 줄여줌',
-      '스스로 집중과 휴식을 조절하게 해줌',
-      '책상 위에서 자연스럽게 루틴을 만들어줌',
+      '스마트폰 알림이나 확인 습관',
+      '주변 소음이나 시선',
+      '할 일과 시간 압박',
+    ],
+  })
+}
+
+function buildProblemWorkaroundQuestion() {
+  return buildPersonaQuestion({
+    intro: '좋아요. 사용자가 지금 어떤 방식으로 버티고 있는지도 보겠습니다.',
+    question: '지금은 그 상황을 어떻게 넘기고 있나요?',
+    choices: [
+      '타이머나 앱에 의존함',
+      '의지만으로 다시 시작하려고 함',
+      '잠시 미루거나 다른 일로 넘어감',
+    ],
+  })
+}
+
+function buildProblemResidueQuestion() {
+  return buildPersonaQuestion({
+    intro: '좋아요. 현재 방식이 충분하지 않은 지점을 더 분명히 잡아볼게요.',
+    question: '그 방식이 반복될 때 결국 어떤 문제가 남나요?',
+    choices: [
+      '다시 몰입하기까지 시간이 오래 걸림',
+      '루틴이 쉽게 끊기고 지속되지 않음',
+      '시간을 놓쳐 피로감이나 불안이 쌓임',
+    ],
+  })
+}
+
+function buildProblemDesiredChangeQuestion() {
+  return buildPersonaQuestion({
+    intro: '좋아요. 마지막으로 해결 이후의 변화를 그려보겠습니다.',
+    question: '문제가 줄어든다면 사용자의 하루나 행동은 어떻게 달라질까요?',
+    choices: [
+      '끊겨도 빠르게 다시 몰입함',
+      '집중과 휴식의 리듬을 스스로 조절함',
+      '책상 앞 루틴이 자연스럽게 유지됨',
     ],
   })
 }
 
 function buildProblemStatementsSummary(messages: NormalizedMessage[]) {
-  const situation = compactPersonaFlowValue(
-    getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.situation),
-    '집중이 필요한 순간 반복적으로 문제 경험'
+  const triggerScene = compactPersonaFlowValue(
+    getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.triggerScene),
+    '집중이 필요한 순간'
   )
-  const discomfort = compactPersonaFlowValue(
-    getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.discomfort),
-    '기존 방식이 방해 요소를 줄여주지 못함'
+  const userAction = compactPersonaFlowValue(
+    getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.userAction),
+    '몰입을 시작하거나 회복하려는 행동'
+  )
+  const interruption = compactPersonaFlowValue(
+    getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.interruption),
+    '반복적인 방해 요소'
+  )
+  const workaround = compactPersonaFlowValue(
+    getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.workaround),
+    '현재 방식으로 임시 대응'
+  )
+  const residue = compactPersonaFlowValue(
+    getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.residue),
+    '재몰입과 루틴 유지의 어려움'
   )
   const needs = compactPersonaFlowValue(
-    getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.needs),
-    '몰입을 회복하고 루틴을 유지하는 해결 필요'
+    getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.desiredChange),
+    '몰입 리듬을 스스로 회복하고 유지하는 변화'
   )
+
+  return [
+    '## Problem Statements',
+    '',
+    '**문제(현재 상황)**',
+    `- ${triggerScene}에 ${userAction}`,
+    '',
+    '**불편함**',
+    `- ${interruption} 때문에 ${workaround}로 대응하지만 ${residue}`,
+    '',
+    '**Needs**',
+    `- ${needs}`,
+    '',
+    '아래의 시각화하기 버튼을 누르면 Problem Statements 카드로 정리됩니다.',
+  ].join('\n')
+}
+
+function buildRevisedProblemStatementsSummary(
+  messages: NormalizedMessage[],
+  revisionText: string
+) {
+  const latestSummary = findLatestPersonaSummary(
+    messages,
+    /##\s*Problem Statements/i
+  )
+  const labels = ['문제(현재 상황)', '불편함', 'Needs']
+  let situation =
+    extractSummarySection(latestSummary, ['문제(현재 상황)'], labels) ||
+    '집중이 필요한 순간 반복적으로 문제 경험'
+  let discomfort =
+    extractSummarySection(latestSummary, ['불편함'], labels) ||
+    '기존 방식이 방해 요소를 줄여주지 못함'
+  let needs =
+    extractSummarySection(latestSummary, ['Needs'], labels) ||
+    '몰입을 회복하고 루틴을 유지하는 해결 필요'
+  const revision = compactPersonaFlowValue(
+    revisionText,
+    '사용자가 수정 요청한 내용을 반영'
+  )
+
+  if (/장면|상황|언제|어디|순간|행동|하려던/i.test(revision)) {
+    situation = revision
+  } else if (/원|필요|해결|달라|변화|기대|목표/i.test(revision)) {
+    needs = revision
+  } else {
+    discomfort = revision
+  }
 
   return [
     '## Problem Statements',
@@ -1366,7 +1518,7 @@ function buildProblemStatementsSummary(messages: NormalizedMessage[]) {
     '**Needs**',
     `- ${needs}`,
     '',
-    '아래의 시각화하기 버튼을 누르면 Problem Statements 카드로 정리됩니다.',
+    '수정 내용을 반영했습니다. 아래의 시각화하기 버튼을 누르면 Problem Statements 카드로 다시 정리됩니다.',
   ].join('\n')
 }
 
@@ -1612,7 +1764,8 @@ function buildPersonaFlowResponse({
     return buildPersonaFlowVisualizationResponse({
       kind: 'problem_statements',
       summary,
-      nextText: buildExperienceEmotionQuestion(),
+      nextText:
+        'Problem Statements 카드를 확인해주세요. 수정할 내용이 있으면 수정하기를, 이대로 진행하려면 확정하기를 눌러주세요.',
       reason: 'problem_statements_visualized',
     })
   }
@@ -1657,7 +1810,7 @@ function buildPersonaFlowResponse({
   )
 
   if (!hasProblemSummary) {
-    if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.situation)) {
+    if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.triggerScene)) {
       return new Response(buildProblemSituationQuestion(), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
@@ -1669,26 +1822,62 @@ function buildPersonaFlowResponse({
       })
     }
 
-    if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.discomfort)) {
-      return new Response(buildProblemDiscomfortQuestion(), {
+    if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.userAction)) {
+      return new Response(buildProblemUserActionQuestion(), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
           'x-aidee-next-stage': 'step_2_persona',
           'x-aidee-transition': 'no',
-          'x-aidee-reason': 'problem_discomfort_question',
+          'x-aidee-reason': 'problem_user_action_question',
         },
       })
     }
 
-    if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.needs)) {
-      return new Response(buildProblemNeedsQuestion(), {
+    if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.interruption)) {
+      return new Response(buildProblemInterruptionQuestion(), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
           'x-aidee-next-stage': 'step_2_persona',
           'x-aidee-transition': 'no',
-          'x-aidee-reason': 'problem_needs_question',
+          'x-aidee-reason': 'problem_interruption_question',
+        },
+      })
+    }
+
+    if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.workaround)) {
+      return new Response(buildProblemWorkaroundQuestion(), {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'x-aidee-current-stage': 'step_2_persona',
+          'x-aidee-next-stage': 'step_2_persona',
+          'x-aidee-transition': 'no',
+          'x-aidee-reason': 'problem_workaround_question',
+        },
+      })
+    }
+
+    if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.residue)) {
+      return new Response(buildProblemResidueQuestion(), {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'x-aidee-current-stage': 'step_2_persona',
+          'x-aidee-next-stage': 'step_2_persona',
+          'x-aidee-transition': 'no',
+          'x-aidee-reason': 'problem_residue_question',
+        },
+      })
+    }
+
+    if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.desiredChange)) {
+      return new Response(buildProblemDesiredChangeQuestion(), {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'x-aidee-current-stage': 'step_2_persona',
+          'x-aidee-next-stage': 'step_2_persona',
+          'x-aidee-transition': 'no',
+          'x-aidee-reason': 'problem_desired_change_question',
         },
       })
     }
@@ -1704,6 +1893,10 @@ function buildPersonaFlowResponse({
     })
   }
 
+  const problemStatementsConfirmed =
+    hasPersonaFlowCardConfirmation(messages, 'problem_statements') ||
+    isProblemStatementsConfirmation(lastUserMessage)
+
   if (!hasPersonaFlowCard(messages, 'problem_statements')) {
     return new Response('먼저 Problem Statements 정리 아래의 시각화하기 버튼을 눌러 카드를 만들어주세요.', {
       headers: {
@@ -1714,6 +1907,48 @@ function buildPersonaFlowResponse({
         'x-aidee-reason': 'awaiting_problem_statements_visualization',
       },
     })
+  }
+
+  if (!problemStatementsConfirmed) {
+    if (isProblemStatementsRevisionRequest(lastUserMessage)) {
+      return new Response(buildProblemStatementsRevisionQuestion(), {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'x-aidee-current-stage': 'step_2_persona',
+          'x-aidee-next-stage': 'step_2_persona',
+          'x-aidee-transition': 'no',
+          'x-aidee-reason': 'problem_statements_revision_question',
+        },
+      })
+    }
+
+    if (hasRecentProblemStatementsRevisionPrompt(messages) && lastUserMessage.trim()) {
+      return new Response(
+        buildRevisedProblemStatementsSummary(messages, lastUserMessage),
+        {
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'x-aidee-current-stage': 'step_2_persona',
+            'x-aidee-next-stage': 'step_2_persona',
+            'x-aidee-transition': 'no',
+            'x-aidee-reason': 'problem_statements_revised_summary',
+          },
+        }
+      )
+    }
+
+    return new Response(
+      'Problem Statements 카드를 확인해주세요. 수정할 내용이 있으면 수정하기를, 이대로 진행하려면 확정하기를 눌러주세요.',
+      {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'x-aidee-current-stage': 'step_2_persona',
+          'x-aidee-next-stage': 'step_2_persona',
+          'x-aidee-transition': 'no',
+          'x-aidee-reason': 'awaiting_problem_statements_confirmation',
+        },
+      }
+    )
   }
 
   if (!hasExperienceSummary) {
@@ -2438,7 +2673,7 @@ function buildInitialPrompt(project: ProjectRecord | null) {
 
   return [
     `${title} 프로젝트가 방금 생성되었습니다.`,
-    '저장된 프로젝트 정보(requirements)를 바탕으로 Project Card 고정 템플릿을 출력하고, 아이디어 텍스트를 정리한 뒤 제품의 구체적인 모습이나 추가 설명이 있는지 질문하세요.',
+    '저장된 프로젝트 정보(requirements)를 바탕으로 Project Direction 고정 템플릿을 출력하고, 아이디어 텍스트를 정리한 뒤 제품의 구체적인 모습이나 추가 설명이 있는지 질문하세요.',
     '답변은 한국어로 작성하세요.',
     '이 턴에서는 전체 프로세스 단계 설명을 하지 마세요.',
   ].join('\n')
@@ -2484,7 +2719,7 @@ function getStageSpecificInstruction(currentStageKey: StageKey) {
       return `
 [현재 단계 운영]
 - 지금은 STEP 0 프로젝트 시작 공통 확인 구간입니다.
-- 프로젝트 생성 직후에는 먼저 Project Card 고정 템플릿으로 저장된 정보를 기준점으로 정리하고, 제품의 구체적인 모습이나 추가 설명이 있는지 질문 1개로 끝내세요.
+- 프로젝트 생성 직후에는 먼저 Project Direction 고정 템플릿으로 저장된 정보를 기준점으로 정리하고, 제품의 구체적인 모습이나 추가 설명이 있는지 질문 1개로 끝내세요.
 - 사용자의 추가 입력을 받은 뒤에는 전체 내용(프로젝트 목표, 제품 카테고리, 예산/기간 범위, 최종 활용 목적)을 정리하고, 프로세스 확인하기 버튼을 안내하세요.
 - 사용자가 프로세스 확인하기를 선택하기 전에는 전체 프로세스 0~7단계를 설명하지 마세요.
 - 전체 톤은 친절하고 차분하게 유지하세요.
@@ -2503,6 +2738,8 @@ function getStageSpecificInstruction(currentStageKey: StageKey) {
 [현재 단계 운영]
 - 지금은 STEP 2 사용자 명확화 단계입니다.
 - 이 단계는 Problem Statements → Keywords: Experience → Keywords: Relationship → Persona Summary → Persona Card 순서로 진행합니다.
+- Problem Statements는 현재 상황, 불편함, 근본적 니즈를 직접 묻지 말고 여러 사용 장면 질문을 통해 도출합니다.
+- Problem Statements 카드가 만들어진 뒤에는 사용자가 확정하기를 누르기 전까지 다음 질문으로 넘어가지 않습니다.
 - 한 번에 질문은 1개만 합니다.
 - 각 묶음의 텍스트 정리 뒤에는 사용자가 시각화하기 버튼을 누른 다음에만 다음 묶음으로 이어갑니다.
 - Persona Card에는 Demographic Info, Persona Story, Problem & Needs, Current Behavior, Lifestyle Context, Relationship Keyword가 들어갑니다.

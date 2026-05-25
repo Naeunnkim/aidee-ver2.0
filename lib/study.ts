@@ -120,7 +120,7 @@ export const PROCESS_STEPS: Array<{
   {
     index: 0,
     title: '프로젝트 시작 공통 확인 구간',
-    description: '초기 입력을 Project Card로 정리하고 출발 기준을 맞춥니다.',
+    description: '초기 입력을 Project Direction으로 정리하고 출발 기준을 맞춥니다.',
     stageKeys: ['step_0_start'],
   },
   {

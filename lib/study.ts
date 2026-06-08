@@ -87,7 +87,6 @@ export const STAGE_DEFINITIONS: Array<{
 ]
 
 export const SIDEBAR_STEPS = [
-  '프로젝트 시작 공통 확인 구간',
   '제품 아이디어 및 개발 조건 정리',
   '사용자 명확화',
   '디자인/개발 방향성 도출',
@@ -117,12 +116,6 @@ export const PROCESS_STEPS: Array<{
   description: string
   stageKeys: StageKey[]
 }> = [
-  {
-    index: 0,
-    title: '프로젝트 시작 공통 확인 구간',
-    description: '초기 입력을 Project Direction으로 정리하고 출발 기준을 맞춥니다.',
-    stageKeys: ['step_0_start'],
-  },
   {
     index: 1,
     title: '제품 아이디어 및 개발 조건 정리',

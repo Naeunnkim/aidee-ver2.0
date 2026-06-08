@@ -88,6 +88,9 @@ type ProjectDirectionData = {
   title: string
   goal: string
   category: string
+  budgetMinimum: string
+  budgetRange: string
+  duration: string
   budgetAndDuration: string
   size: string
   features: string
@@ -187,6 +190,10 @@ function stripInternalBlocksForDisplay(text: string) {
     )
     .replace(
       /\n?#\s*Project\s*(?:Card|Direction)\s*[\s\S]*?(?=\n\s*제품의\s*구체적인\s*모습|\n\s*형태,\s*색감|\s*$)/gi,
+      ''
+    )
+    .replace(
+      /\n?(?:수정 내용을 반영했습니다\.\s*)?내용을 확인한 뒤 확정하기를 누르면 시각화하기 버튼이 나타납니다\./g,
       ''
     )
     .replace(/\n?\[시스템\s*참고:[\s\S]*?\]/gi, '')
@@ -313,105 +320,6 @@ function splitAssistantChoices(content: string): {
   }
 }
 
-function buildFallbackHintChoices(content: string): ChatChoice[] {
-  const normalized = content.replace(/\s+/g, ' ')
-
-  const makeChoices = (labels: [string, string, string]): ChatChoice[] =>
-    labels.map((label, index) => {
-      const key = ['A', 'B', 'C'][index] as ChatChoice['key']
-
-      return {
-        key,
-        label,
-        value: `${key}. ${label}`,
-      }
-    })
-
-  if (/구체적인\s*모습|추가\s*설명|형태|색감|재질|사용\s*장면/.test(normalized)) {
-    return makeChoices([
-      '형태나 재질 중심으로 설명할게요',
-      '사용 장면과 분위기 중심으로 설명할게요',
-      '아직 구체적인 모습은 없어요',
-    ])
-  }
-
-  if (/누가|사용자|타겟|나이|직업|페르소나/.test(normalized)) {
-    return makeChoices([
-      'Aidee가 적합한 사용자를 추천해주세요',
-      '제가 생각한 사용자층을 설명할게요',
-      '아직 모르겠어요',
-    ])
-  }
-
-  if (/기존에 사용하던 방법|불편했던 점|방해 요소/.test(normalized)) {
-    return makeChoices([
-      '알림이나 유혹 때문에 쉽게 이탈해요',
-      '루틴을 시작하거나 유지하기 어려워요',
-      '시간 조절이 잘 되지 않아요',
-    ])
-  }
-
-  if (/해결해주었으면|가장 중요한 문제|Needs/i.test(normalized)) {
-    return makeChoices([
-      '재몰입 시간을 줄여주면 좋겠어요',
-      '집중과 휴식을 스스로 조절하고 싶어요',
-      '책상 위 루틴을 자연스럽게 만들고 싶어요',
-    ])
-  }
-
-  if (/감정|평온함|개운함|성취감|안정감/.test(normalized)) {
-    return makeChoices([
-      '평온함과 안정감을 느끼면 좋겠어요',
-      '개운함과 성취감을 느끼면 좋겠어요',
-      '부담 없이 차분해지면 좋겠어요',
-    ])
-  }
-
-  if (/행동|루틴|재몰입|시간 인식|자기조절/.test(normalized)) {
-    return makeChoices([
-      '집중 루틴이 자연스럽게 생기면 좋겠어요',
-      '끊긴 뒤 다시 몰입하기 쉬워지면 좋겠어요',
-      '시간을 더 잘 인식하고 조절하면 좋겠어요',
-    ])
-  }
-
-  if (/관계|스마트폰|책상|시간|알림|이탈|흐름|리듬/.test(normalized)) {
-    return makeChoices([
-      '방해 요소와 거리를 두게 만들고 싶어요',
-      '책상을 안정적인 몰입 공간으로 만들고 싶어요',
-      '시간의 흐름과 전환을 인식하게 하고 싶어요',
-    ])
-  }
-
-  if (/언제|순간|상황|맥락|사용\s*전|사용\s*중|사용\s*후/.test(normalized)) {
-    return makeChoices([
-      '일상에서 반복되는 상황으로 잡아주세요',
-      '특별한 사용 상황으로 잡아주세요',
-      '아직 모르겠어요',
-    ])
-  }
-
-  if (/우선|기준|고를|선택|중요|가치/.test(normalized)) {
-    return makeChoices([
-      '실용성과 기능을 우선하고 싶어요',
-      '디자인과 감성을 우선하고 싶어요',
-      '아직 우선순위를 정하지 못했어요',
-    ])
-  }
-
-  return makeChoices([
-    '아직 잘 모르겠어요. Aidee가 추천해주세요',
-    '현재 정보만으로 진행해주세요',
-    '제가 직접 설명을 더 추가할게요',
-  ])
-}
-
-function isAssistantQuestion(content: string) {
-  return /[?？]\s*$|알려주세요|말씀해주세요|선택해주세요|확인해주세요|진행할까요|있나요|어떤.+요\?/m.test(
-    content.trim()
-  )
-}
-
 function isStageProceedPrompt(content: string) {
   const normalized = content.replace(/\s+/g, ' ').trim()
   const mentionsProceedQuestion = /진행할까요[?？]?/.test(normalized)
@@ -444,6 +352,12 @@ function getStageKeyFromProceedPrompt(content: string): StageKey | null {
   )
 }
 
+function splitBudgetAndDuration(value: string) {
+  const [budgetRange = '', duration = ''] = value.split('/').map((item) => item.trim())
+
+  return { budgetRange, duration }
+}
+
 function extractProjectDirectionCard(content: string): ProjectDirectionData | null {
   const markerMatch = content.match(
     /<<AIDEE_PROJECT_DIRECTION>>\s*([\s\S]*?)\s*<<\/AIDEE_PROJECT_DIRECTION>>/
@@ -464,8 +378,12 @@ function extractProjectDirectionCard(content: string): ProjectDirectionData | nu
     '프로젝트 목표',
     '제품 카테고리',
     '예산/기간 범위',
+    'Budget Minimum',
+    'Target Timeline',
+    'Project Scope',
     '예상 크기',
     '주요 기능',
+    'Key Features',
     '최종 활용 목적',
     '아이디어 정리',
     '참고 자료',
@@ -503,13 +421,23 @@ function extractProjectDirectionCard(content: string): ProjectDirectionData | nu
   }
 
   const getValue = (label: string) => values.get(label)?.trim() || '미정'
+  const legacyBudgetAndDuration = getValue('예산/기간 범위')
+  const legacyBudgetParts = splitBudgetAndDuration(legacyBudgetAndDuration)
+  const projectScope = getValue('Project Scope')
+  const targetTimeline = getValue('Target Timeline')
+  const keyFeatures = getValue('Key Features')
   const data = {
     title: getValue('프로젝트명'),
     goal: getValue('프로젝트 목표'),
     category: getValue('제품 카테고리'),
-    budgetAndDuration: getValue('예산/기간 범위'),
+    budgetMinimum: getValue('Budget Minimum'),
+    budgetRange:
+      projectScope !== '미정' ? projectScope : legacyBudgetParts.budgetRange || '미정',
+    duration:
+      targetTimeline !== '미정' ? targetTimeline : legacyBudgetParts.duration || '미정',
+    budgetAndDuration: legacyBudgetAndDuration,
     size: getValue('예상 크기'),
-    features: getValue('주요 기능'),
+    features: keyFeatures !== '미정' ? keyFeatures : getValue('주요 기능'),
     usage: getValue('최종 활용 목적'),
     ideaSummary: getValue('아이디어 정리'),
     referenceSummary: getValue('참고 자료'),
@@ -1166,21 +1094,132 @@ function parsePersonaVisualData(content: string) {
   return parsePersonaData(content) ?? parsePersonaSummaryData(content)
 }
 
+function limitProjectDirectionWords(text: string, maxWords: number) {
+  const words = text.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
+
+  if (words.length <= maxWords) {
+    return text.replace(/\s+/g, ' ').trim()
+  }
+
+  return `${words.slice(0, maxWords).join(' ')}...`
+}
+
+function formatProjectDirectionSentence(text: string) {
+  const summary = limitProjectDirectionWords(text, 100)
+
+  if (!summary) {
+    return '아직 아이디어 텍스트가 충분히 입력되지 않았습니다.'
+  }
+
+  if (/[.!?。！？]$/.test(summary)) {
+    return summary
+  }
+
+  if (/(다|요|니다|습니다)$/.test(summary)) {
+    return `${summary}.`
+  }
+
+  return `${summary}가 목표입니다.`
+}
+
+function formatProjectScope(value: string) {
+  return (
+    value
+      .replace(/\s*~\s*/g, ' - ')
+      .replace(/\s*-\s*/g, ' - ')
+      .replace(/만\s*원/g, '만원')
+      .replace(/억\s*원/g, '억원')
+      .trim() || '미정'
+  )
+}
+
+function parseProjectScopeMinimum(value: string) {
+  const firstValue = value.split(/\s*(?:-|~|\/)\s*/)[0] ?? ''
+  const eokMatch = firstValue.match(/([\d,.]+)\s*억/)
+  const manwonMatch = firstValue.match(/([\d,.]+)\s*만\s*원?/)
+  const plainMatch = firstValue.match(/([\d,.]+)/)
+
+  if (eokMatch) {
+    return Number(eokMatch[1].replace(/,/g, '')) * 10000
+  }
+
+  if (manwonMatch) {
+    return Number(manwonMatch[1].replace(/,/g, ''))
+  }
+
+  if (plainMatch) {
+    return Number(plainMatch[1].replace(/,/g, ''))
+  }
+
+  return Number.NaN
+}
+
+function formatProjectMinimumBudget(data: ProjectDirectionData) {
+  if (data.budgetMinimum && data.budgetMinimum !== '미정') {
+    return data.budgetMinimum
+  }
+
+  const minBudget = parseProjectScopeMinimum(data.budgetRange)
+
+  if (Number.isNaN(minBudget)) {
+    return '미정'
+  }
+
+  return `$${Math.round(minBudget / 100)}K+`
+}
+
+function formatProjectTimeline(value: string) {
+  const normalized = value.replace(/\s+/g, '')
+  const yearMatch = normalized.match(/(\d+(?:\.\d+)?)년/)
+  const monthMatch = normalized.match(/(\d+(?:\.\d+)?)(?:개월|달|months?|mo)/i)
+  const weekMatch = normalized.match(/(\d+(?:\.\d+)?)(?:주|weeks?|w)/i)
+
+  if (/months?|weeks?|years?/i.test(value)) {
+    return value
+  }
+
+  if (yearMatch) {
+    return `${Number(yearMatch[1]) * 12}${normalized.includes('+') ? '+' : ''} Months`
+  }
+
+  if (monthMatch) {
+    const months = Number(monthMatch[1])
+
+    return `${months}${normalized.includes('+') ? '+' : ''} ${
+      months === 1 ? 'Month' : 'Months'
+    }`
+  }
+
+  if (weekMatch) {
+    const weeks = Number(weekMatch[1])
+
+    return `${weeks}${normalized.includes('+') ? '+' : ''} ${
+      weeks === 1 ? 'Week' : 'Weeks'
+    }`
+  }
+
+  return value || '미정'
+}
+
+function getProjectFeatureItems(value: string) {
+  const items = value
+    .split(/\n|,|，|、/g)
+    .map((item) => item.replace(/^[-•]\s*/, '').trim())
+    .filter(Boolean)
+
+  return items.length > 0 ? items : ['미정']
+}
+
 function ProjectDirectionCard({ data }: { data: ProjectDirectionData }) {
-  const fields = [
-    { label: '프로젝트 목표', value: data.goal, wide: true },
-    { label: '제품 카테고리', value: data.category },
-    { label: '예산 / 기간', value: data.budgetAndDuration },
-    { label: '예상 크기', value: data.size },
-    { label: '주요 기능', value: data.features },
-    { label: '최종 활용 목적', value: data.usage },
-    { label: '참고 자료', value: data.referenceSummary },
-    { label: '아이디어 정리', value: data.ideaSummary, wide: true },
-  ]
+  const featureItems = getProjectFeatureItems(data.features)
+  const projectScope = formatProjectScope(data.budgetRange)
+  const minimumBudget = formatProjectMinimumBudget(data)
+  const targetTimeline = formatProjectTimeline(data.duration)
+  const ideaSummary = formatProjectDirectionSentence(data.ideaSummary)
 
   return (
-    <div className="my-4 w-full max-w-[664px] overflow-x-auto pb-1">
-      <div className="relative h-[292px] w-[492px] overflow-hidden rounded-xl bg-white font-sans shadow-[0px_0px_24px_0px_rgba(0,0,0,0.12)]">
+    <div className="my-4 w-full max-w-[684px] overflow-x-auto pb-1">
+      <div className="relative h-[332px] w-[560px] overflow-hidden rounded-xl bg-white font-sans shadow-[0px_0px_24px_0px_rgba(0,0,0,0.12)]">
         <div className="absolute left-0 top-0 flex h-full w-36 flex-col justify-between bg-zinc-200 px-5 py-5">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
@@ -1198,38 +1237,509 @@ function ProjectDirectionCard({ data }: { data: ProjectDirectionData }) {
           </div>
         </div>
 
-        <div className="absolute left-[166px] top-[14px] grid h-[264px] w-[306px] grid-cols-2 gap-x-3 gap-y-2 overflow-hidden">
-          {fields.map((field) => (
-            <ProjectDirectionField
-              key={field.label}
-              label={field.label}
-              value={field.value}
-              wide={field.wide}
-            />
-          ))}
+        <div className="absolute left-[166px] top-[18px] h-[296px] w-[370px] overflow-hidden">
+          <p className="max-h-[24px] overflow-hidden text-[15px] font-bold leading-6 text-zinc-800">
+            {data.category}
+          </p>
+          <p className="mt-2 max-h-[54px] overflow-hidden text-[12px] font-medium leading-[18px] text-zinc-600">
+            {ideaSummary}
+          </p>
+
+          <div className="mt-4 grid grid-cols-[132px_1fr] gap-x-4">
+            <div>
+              <p className="max-h-[36px] overflow-hidden text-[30px] font-extrabold leading-9 text-zinc-900">
+                {minimumBudget}
+              </p>
+
+              <div className="mt-5">
+                <ProjectDirectionSection
+                  label="Target Timeline"
+                  value={targetTimeline}
+                />
+              </div>
+            </div>
+
+            <div className="min-w-0">
+              <ProjectDirectionSection
+                label="Project Scope"
+                value={projectScope}
+              />
+
+              <div className="mt-4">
+                <p className="text-[9px] font-semibold uppercase leading-3 tracking-[0.1em] text-zinc-400">
+                  Key Features
+                </p>
+                <ul className="mt-1.5 max-h-[94px] space-y-1 overflow-hidden text-[11px] font-medium leading-[15px] text-zinc-700">
+                  {featureItems.map((feature) => (
+                    <li key={feature} className="flex gap-1.5">
+                      <span className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-zinc-400" />
+                      <span className="min-w-0 break-words">{feature}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   )
 }
 
-function ProjectDirectionField({
+function ProjectDirectionSection({
   label,
   value,
-  wide = false,
 }: {
   label: string
   value: string
-  wide?: boolean
 }) {
   return (
-    <div className={wide ? 'col-span-2' : ''}>
-      <p className="text-[9px] font-semibold leading-3 text-zinc-400">
+    <div>
+      <p className="text-[9px] font-semibold uppercase leading-3 tracking-[0.1em] text-zinc-400">
         {label}
       </p>
-      <p className="mt-0.5 max-h-[34px] overflow-hidden text-[11px] font-medium leading-[17px] text-zinc-700">
+      <p className="mt-1 max-h-[34px] overflow-hidden break-words text-[12px] font-bold leading-[17px] text-zinc-700">
         {value}
       </p>
+    </div>
+  )
+}
+
+type ProblemStatementCardSection = {
+  label: '01. Context' | '02. Problems' | '03. Needs'
+  title: string
+  description: string
+}
+
+function getPersonaFlowBody(
+  summary: string,
+  title: string
+) {
+  return summary
+    .replace(new RegExp(`^##\\s*${title}\\s*`, 'i'), '')
+    .split('\n')
+    .filter((line) => !/아래의 시각화하기 버튼/.test(line))
+    .join('\n')
+    .trim()
+}
+
+function cleanProblemStatementLine(line: string) {
+  return line
+    .replace(/^#{1,6}\s*/, '')
+    .replace(/^[-•]\s*/, '')
+    .replace(/\*\*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function getProblemStatementLabel(line: string):
+  | ProblemStatementCardSection['label']
+  | null {
+  const normalized = line.toLowerCase()
+
+  if (/^(?:0?1[.)]\s*)?context$/.test(normalized) || line === '문제(현재 상황)') {
+    return '01. Context'
+  }
+
+  if (/^(?:0?2[.)]\s*)?problems?$/.test(normalized) || line === '불편함') {
+    return '02. Problems'
+  }
+
+  if (/^(?:0?3[.)]\s*)?needs?$/.test(normalized)) {
+    return '03. Needs'
+  }
+
+  return null
+}
+
+function normalizeProblemStatementText(text: string) {
+  return text.replace(/[\s.,:;!?。！？'"]/g, '').trim()
+}
+
+function cleanupProblemStatementTitle(text: string) {
+  return text
+    .replace(/\.\.\.$/, '')
+    .replace(/^(사용자는|사용자가|기존 방식은|실제)\s*/, '')
+    .replace(/(?:상황을\s*다룬다|문제가\s*남는다|필요하다|원한다|기반으로\s*한다|이어진다)$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function isGenericProblemStatementTitle(title: string) {
+  return /^(?:사용 맥락|문제 흐름|필요 방향|Context|Problems|Needs)(?:\s*요약)?$|^수정된\s*(?:사용 맥락|문제 흐름|필요 방향)$/i.test(
+    title.trim()
+  )
+}
+
+function summarizeProblemStatementTitle(description: string, fallback: string) {
+  const firstSentence = description
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(/[.!?。！？]/)[0]
+    ?.trim()
+  const colonTitle = firstSentence?.split(/[:：]/)[0]?.trim() || ''
+  const title = cleanupProblemStatementTitle(colonTitle)
+
+  if (
+    !title ||
+    normalizeProblemStatementText(title) === normalizeProblemStatementText(description)
+  ) {
+    return fallback
+  }
+
+  return title
+}
+
+function stripProblemStatementTitlePrefix(description: string, title: string) {
+  return description
+    .replace(new RegExp(`^\\s*${escapeRegExp(title)}\\s*[:：]\\s*`, 'i'), '')
+    .trim()
+}
+
+function isDuplicateProblemStatementTitle(title: string, description: string) {
+  const normalizedTitle = normalizeProblemStatementText(title)
+  const normalizedDescription = normalizeProblemStatementText(description)
+
+  return (
+    normalizedTitle.length > 0 &&
+    (normalizedTitle === normalizedDescription ||
+      normalizedDescription.startsWith(normalizedTitle))
+  )
+}
+
+function parseProblemStatementSections(summary: string) {
+  const body = getPersonaFlowBody(summary, 'Problem Statements')
+  const sections: ProblemStatementCardSection[] = []
+  let current: ProblemStatementCardSection | null = null
+
+  const pushCurrent = () => {
+    if (!current) {
+      return
+    }
+    const fallbackTitle = current.label.replace(/^\d+\.\s*/, '')
+    const title = current.title.trim()
+    const rawDescription =
+      current.description.trim() || title || '내용을 정리 중입니다.'
+    const shouldSummarizeTitle =
+      !title ||
+      !current.description.trim() ||
+      isGenericProblemStatementTitle(title) ||
+      isDuplicateProblemStatementTitle(title, rawDescription)
+    const sectionTitle = shouldSummarizeTitle
+      ? summarizeProblemStatementTitle(rawDescription, fallbackTitle)
+      : cleanupProblemStatementTitle(title)
+    const description =
+      stripProblemStatementTitlePrefix(rawDescription, sectionTitle) ||
+      rawDescription
+
+    sections.push({
+      label: current.label,
+      title: sectionTitle,
+      description,
+    })
+  }
+
+  body
+    .split('\n')
+    .map(cleanProblemStatementLine)
+    .filter(Boolean)
+    .forEach((line) => {
+      const label = getProblemStatementLabel(line)
+
+      if (label) {
+        pushCurrent()
+        current = { label, title: '', description: '' }
+        return
+      }
+
+      if (!current) {
+        return
+      }
+
+      if (!current.title) {
+        current.title = line
+        return
+      }
+
+      current.description = [current.description, line].filter(Boolean).join(' ')
+    })
+
+  pushCurrent()
+
+  const defaults: ProblemStatementCardSection[] = [
+    {
+      label: '01. Context',
+      title: '사용 맥락',
+      description: '사용자가 제품을 필요로 하는 장면과 생활 패턴을 정리합니다.',
+    },
+    {
+      label: '02. Problems',
+      title: '문제 흐름',
+      description: '현재 방식에서 반복되는 불편과 해결되지 않는 문제를 정리합니다.',
+    },
+    {
+      label: '03. Needs',
+      title: '필요 방향',
+      description: '사용자가 기대하는 변화와 제품이 제공해야 할 지원을 정리합니다.',
+    },
+  ]
+
+  return defaults.map(
+    (fallback) =>
+      sections.find((section) => section.label === fallback.label) ?? fallback
+  )
+}
+
+function ProblemStatementsFlowCard({ summary }: { summary: string }) {
+  const sections = parseProblemStatementSections(summary)
+
+  return (
+    <div className="my-3 w-full max-w-[602px] rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-base font-bold text-neutral-900">
+          Problem Statements
+        </h3>
+        <span className="rounded-full border border-blue-200 bg-blue-50/60 px-2.5 py-1 text-[11px] font-bold text-blue-700">
+          STEP 2
+        </span>
+      </div>
+      <div className="space-y-3">
+        {sections.map((section) => (
+          <section
+            key={section.label}
+            className="border-t border-slate-100 pt-3 first:border-t-0 first:pt-0"
+          >
+            <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-blue-600">
+              {section.label}
+            </p>
+            <h4 className="mt-1 text-sm font-bold leading-5 text-neutral-900">
+              {section.title}
+            </h4>
+            <p className="mt-1 text-sm leading-6 text-slate-700">
+              {section.description}
+            </p>
+          </section>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+type ExperienceKeywordsCardData = {
+  intro: string
+  description: string
+  keywords: string[]
+}
+
+function parseCommaKeywords(text: string) {
+  return text
+    .split(/[,，、/]|(?:\s*·\s*)/g)
+    .map((item) =>
+      item
+        .replace(/^[-•]\s*/, '')
+        .replace(/\*\*/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    )
+    .filter(Boolean)
+}
+
+function uniqueKeywordItems(items: string[]) {
+  const seen = new Set<string>()
+  const keywords: string[] = []
+
+  for (const item of items) {
+    const normalized = item.replace(/\s+/g, '').toLowerCase()
+
+    if (!normalized || seen.has(normalized)) {
+      continue
+    }
+
+    seen.add(normalized)
+    keywords.push(item)
+  }
+
+  return keywords
+}
+
+function buildExperienceIntroSentence(keywords: string[]) {
+  const [
+    context = '직관적인 사용 흐름',
+    valueA = '신뢰감',
+    valueB = '유연함',
+    outcome = '지속 가능한 변화',
+  ] = keywords
+
+  return `${context} 속에서, ${valueA}와 ${valueB}으로 ${outcome}을 경험하는 제품`
+}
+
+function extractKeywordSection(
+  summary: string,
+  labels: string[],
+  boundaryLabels: string[]
+) {
+  const normalized = summary.replace(/\r\n/g, '\n')
+  const escape = (value: string) =>
+    value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const boundary = boundaryLabels.map(escape).join('|')
+
+  for (const label of labels) {
+    const regex = new RegExp(
+      `(?:^|\\n)\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?${escape(
+        label
+      )}(?:\\*\\*)?\\s*\\n([\\s\\S]*?)(?=\\n\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?(?:${boundary})(?:\\*\\*)?\\s*\\n|$)`,
+      'i'
+    )
+    const match = normalized.match(regex)
+
+    if (match?.[1]) {
+      return parseCommaKeywords(match[1])
+    }
+  }
+
+  return []
+}
+
+function extractSingleTextSection(
+  summary: string,
+  labels: string[],
+  boundaryLabels: string[]
+) {
+  const normalized = summary.replace(/\r\n/g, '\n')
+  const escape = (value: string) =>
+    value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const boundary = boundaryLabels.map(escape).join('|')
+
+  for (const label of labels) {
+    const regex = new RegExp(
+      `(?:^|\\n)\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?${escape(
+        label
+      )}(?:\\*\\*)?\\s*\\n([\\s\\S]*?)(?=\\n\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?(?:${boundary})(?:\\*\\*)?\\s*\\n|$)`,
+      'i'
+    )
+    const match = normalized.match(regex)
+
+    if (match?.[1]) {
+      return match[1]
+        .split('\n')
+        .map((line) =>
+          line
+            .replace(/^[-•]\s*/, '')
+            .replace(/\*\*/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+        )
+        .filter(Boolean)
+        .join(' ')
+    }
+  }
+
+  return ''
+}
+
+function parseExperienceKeywordsCard(summary: string): ExperienceKeywordsCardData {
+  const body = getPersonaFlowBody(summary, 'Keywords: Experience')
+  const sectionLabels = [
+    '한줄 소개',
+    '내용',
+    'Keywords',
+    '감정 Keywords (12)',
+    '행동 Keywords (12)',
+    '공간 Keywords (8)',
+    '감정',
+    '행동',
+    '공간',
+  ]
+  const emotionKeywords = extractKeywordSection(
+    body,
+    ['감정 Keywords (12)', '감정'],
+    sectionLabels
+  )
+  const behaviorKeywords = extractKeywordSection(
+    body,
+    ['행동 Keywords (12)', '행동'],
+    sectionLabels
+  )
+  const spaceKeywords = extractKeywordSection(
+    body,
+    ['공간 Keywords (8)', '공간'],
+    sectionLabels
+  )
+  const mergedKeywords = extractKeywordSection(
+    body,
+    ['Keywords'],
+    sectionLabels
+  )
+  const keywords = uniqueKeywordItems([
+    ...mergedKeywords,
+    ...emotionKeywords,
+    ...behaviorKeywords,
+    ...spaceKeywords,
+  ])
+  const primaryKeywords = keywords.slice(0, 6)
+  const introSection = extractSingleTextSection(
+    body,
+    ['한줄 소개'],
+    sectionLabels
+  )
+  const descriptionSection = extractSingleTextSection(
+    body,
+    ['내용'],
+    sectionLabels
+  )
+  const intro =
+    introSection ||
+    buildExperienceIntroSentence(primaryKeywords)
+  const description =
+    descriptionSection ||
+    (keywords.length > 0
+      ? `이 제품은 사용자가 자연스럽게 시작하고 흐름을 회복하며, 사용 후에는 안정감과 만족감을 느끼는 경험을 제공합니다. 공간 안에서는 부담 없이 놓이고 생활 흐름과 연결되는 방향을 지향하며, ${primaryKeywords.join(
+          ', '
+        )} 같은 감각을 중심으로 제품 경험을 제안합니다.`
+      : '이 제품은 사용자가 쉽게 시작하고 자연스럽게 몰입하며, 사용 후에는 긍정적인 감정과 안정된 리듬을 느끼는 경험을 지향합니다. 제품의 기능과 공간 속 존재감이 함께 연결되는 방향을 제안합니다.')
+
+  return {
+    intro,
+    description,
+    keywords,
+  }
+}
+
+function ExperienceKeywordsFlowCard({ summary }: { summary: string }) {
+  const data = parseExperienceKeywordsCard(summary)
+
+  return (
+    <div className="my-3 w-full max-w-[602px] rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-base font-bold text-neutral-900">
+          Keywords: Experience
+        </h3>
+        <span className="rounded-full border border-emerald-200 bg-emerald-50/60 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
+          STEP 2
+        </span>
+      </div>
+      <p className="text-sm font-bold leading-5 text-neutral-900">
+        {data.intro}
+      </p>
+      <p className="mt-2 text-sm leading-6 text-slate-700">
+        {data.description}
+      </p>
+      {data.keywords.length > 0 ? (
+        <div className="mt-4 flex flex-wrap gap-1.5">
+          {data.keywords.map((keyword) => (
+            <span
+              key={keyword}
+              className="rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700"
+            >
+              {keyword}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -1254,12 +1764,16 @@ function PersonaFlowCard({
     experience_keywords: 'border-emerald-200 bg-emerald-50/60 text-emerald-700',
     relationship_keywords: 'border-violet-200 bg-violet-50/60 text-violet-700',
   }
-  const body = summary
-    .replace(new RegExp(`^##\\s*${titleMap[kind]}\\s*`, 'i'), '')
-    .split('\n')
-    .filter((line) => !/아래의 시각화하기 버튼/.test(line))
-    .join('\n')
-    .trim()
+
+  if (kind === 'problem_statements') {
+    return <ProblemStatementsFlowCard summary={summary} />
+  }
+
+  if (kind === 'experience_keywords') {
+    return <ExperienceKeywordsFlowCard summary={summary} />
+  }
+
+  const body = getPersonaFlowBody(summary, titleMap[kind])
 
   return (
     <div className="my-3 w-full max-w-[602px] rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -1745,6 +2259,10 @@ function getStageSignature(stageKey: StageKey) {
 }
 
 function StageDivider({ stageKey }: { stageKey: StageKey }) {
+  if (stageKey === 'step_0_start') {
+    return null
+  }
+
   const experts = getStageExperts(stageKey)
   const expertLabels = experts
     .map((expert) => getExpertDefinition(expert).label)
@@ -1964,6 +2482,8 @@ export default function ChatPage({
   const [confirmedPersonaFlowCardIds, setConfirmedPersonaFlowCardIds] = useState<
     Record<string, boolean>
   >({})
+  const [confirmedVisualizationMessageIds, setConfirmedVisualizationMessageIds] =
+    useState<Record<string, boolean>>({})
   const [visualizedPersonaMessageIds, setVisualizedPersonaMessageIds] = useState<
     Record<string, boolean>
   >({})
@@ -1977,7 +2497,11 @@ export default function ChatPage({
     (expert) => expert.key !== 'aidee'
   )
   const uiStageKey = pendingNextStageKey ?? currentStageKey
+  const displayedStageKey: StageKey =
+    uiStageKey === 'step_0_start' ? 'step_1_idea' : uiStageKey
   const activeSidebarIndex = getSidebarStepIndex(uiStageKey)
+  const displayedActiveSidebarIndex =
+    activeSidebarIndex === 0 ? 1 : activeSidebarIndex
   const currentStageExperts = getStageExperts(uiStageKey)
   const hasProcessGuideMessage = messages.some(
     (message) =>
@@ -3023,11 +3547,26 @@ export default function ChatPage({
     await sendChatAction('Problem Statements 카드를 확정합니다.')
   }
 
+  const confirmVisualizationMessage = (messageId: string) => {
+    setConfirmedVisualizationMessageIds((prev) => ({
+      ...prev,
+      [messageId]: true,
+    }))
+  }
+
+  const requestVisualizationRevision = async (label: string) => {
+    if (isLoading) {
+      return
+    }
+
+    await sendChatAction(`수정하기: ${label} 내용을 수정하고 싶어요.`)
+  }
+
   const visualizePersonaArtifact = async (
     messageId: string,
     personaContent: string
   ) => {
-    if (isLoading || !sessionId) {
+    if (isLoading || !sessionId || !confirmedVisualizationMessageIds[messageId]) {
       return
     }
 
@@ -3091,7 +3630,7 @@ export default function ChatPage({
     directionContent: string,
     directionKind: DirectionArtifactKind
   ) => {
-    if (isLoading || !sessionId) {
+    if (isLoading || !sessionId || !confirmedVisualizationMessageIds[messageId]) {
       return
     }
 
@@ -3142,7 +3681,7 @@ export default function ChatPage({
     messageId: string,
     styleContent: string
   ) => {
-    if (isLoading || !sessionId) {
+    if (isLoading || !sessionId || !confirmedVisualizationMessageIds[messageId]) {
       return
     }
 
@@ -3270,9 +3809,7 @@ export default function ChatPage({
       : null
   const hintModalChoices =
     hintModalMessage && hintModalChoiceSplit
-      ? hintModalChoiceSplit.choices.length > 0
-        ? hintModalChoiceSplit.choices
-        : buildFallbackHintChoices(hintModalMessage.content)
+      ? hintModalChoiceSplit.choices
       : []
 
   return (
@@ -3311,7 +3848,8 @@ export default function ChatPage({
                 <div className="inline-flex items-start gap-1.5">
                   <div className="inline-flex w-2.5 flex-col items-start">
                     {SIDEBAR_STEPS.map((_, index) => {
-                      const isActive = index === activeSidebarIndex
+                      const stepNumber = index + 1
+                      const isActive = stepNumber === displayedActiveSidebarIndex
                       const isLast = index === SIDEBAR_STEPS.length - 1
 
                       return (
@@ -3338,12 +3876,13 @@ export default function ChatPage({
                   </div>
                   <div className="inline-flex w-56 flex-col items-start">
                     {SIDEBAR_STEPS.map((step, index) => {
-                      const isActive = index === activeSidebarIndex
+                      const stepNumber = index + 1
+                      const isActive = stepNumber === displayedActiveSidebarIndex
                       return (
                         <button
                           key={step}
                           type="button"
-                          onClick={() => scrollToSidebarStep(index)}
+                          onClick={() => scrollToSidebarStep(stepNumber)}
                           className={`inline-flex self-stretch items-center gap-2 rounded-xl py-1.5 text-left transition ${
                             isActive
                               ? 'bg-blue-50/70'
@@ -3355,7 +3894,7 @@ export default function ChatPage({
                               isActive ? 'text-blue-600' : 'text-gray-300'
                             }`}
                           >
-                            {index}. {step}
+                            {stepNumber}. {step}
                           </div>
                         </button>
                       )
@@ -3434,7 +3973,9 @@ export default function ChatPage({
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
               <p className="text-sm font-medium text-sky-700">{projectTitle}</p>
-              <p className="text-xs text-zinc-400">현재 단계: {uiStageKey}</p>
+              <p className="text-xs text-zinc-400">
+                현재 단계: {getStageLabel(displayedStageKey)}
+              </p>
               {latestGeneratedImageBlock?.images.length ? (
                 <p className="text-xs text-zinc-400">
                   최근 생성 이미지: {latestGeneratedImageBlock.images.length}장
@@ -3505,6 +4046,24 @@ export default function ChatPage({
               m.role === 'assistant' ? getDirectionResearchKind(m.content) : null
             const isStyleProposal =
               m.role === 'assistant' && isStyleReferenceProposal(m.content)
+            const visualizationLabel =
+              personaArtifactKind === 'problem_statements'
+                ? 'Problem Statements'
+                : personaArtifactKind === 'experience_keywords'
+                  ? 'Keywords: Experience'
+                  : personaArtifactKind === 'relationship_keywords'
+                    ? 'Keywords: Relationship'
+                    : personaArtifactKind === 'persona'
+                      ? 'Persona Summary'
+                      : directionResearchKind === 'market_size'
+                        ? '시장 규모 리서치'
+                        : directionResearchKind === 'consumption_keywords'
+                          ? '소비 트렌드 리서치'
+                          : directionResearchKind === 'brand_positioning'
+                            ? '경쟁사 리서치'
+                            : isStyleProposal
+                              ? '스타일 레퍼런스'
+                              : null
             const personaSummaryData =
               m.role === 'assistant' ? parsePersonaData(m.content) : null
             const isPersonaSummary =
@@ -3580,8 +4139,7 @@ export default function ChatPage({
               !isPersonaSummary &&
               !styleKeywordPicker &&
               !isStyleProposal &&
-              (assistantChoiceSplit.choices.length > 0 ||
-                isAssistantQuestion(contentForDisplay))
+              assistantChoiceSplit.choices.length > 0
             const personaArtifactWasVisualized = Boolean(
               personaArtifactKind &&
                 (visualizedPersonaMessageIds[m.id] ||
@@ -3604,6 +4162,29 @@ export default function ChatPage({
                     const laterCard = extractDirectionCard(message.content)
                     return laterCard?.kind === directionResearchKind
                   }))
+            )
+            const styleMoodboardWasVisualized = Boolean(
+              isStyleProposal && visualizedDirectionMessageIds[m.id]
+            )
+            const canVisualizePersonaArtifact = Boolean(
+              isPersonaSummary &&
+                personaArtifactKind &&
+                !personaArtifactWasVisualized
+            )
+            const canVisualizeDirectionArtifact = Boolean(
+              directionResearchKind && !directionResearchWasVisualized
+            )
+            const canVisualizeStyleMoodboard = Boolean(
+              isStyleProposal && !styleMoodboardWasVisualized
+            )
+            const showVisualizationGate = Boolean(
+              visualizationLabel &&
+                (canVisualizePersonaArtifact ||
+                  canVisualizeDirectionArtifact ||
+                  canVisualizeStyleMoodboard)
+            )
+            const visualizationMessageConfirmed = Boolean(
+              confirmedVisualizationMessageIds[m.id]
             )
             const personaCardWasConfirmed = Boolean(
               confirmedPersonaMessageIds[m.id] ||
@@ -3898,9 +4479,32 @@ export default function ChatPage({
                     </button>
                   </div>
                 ) : null}
+                {showVisualizationGate && visualizationLabel ? (
+                  <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={isLoading}
+                      onClick={() =>
+                        void requestVisualizationRevision(visualizationLabel)
+                      }
+                      className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm outline outline-1 outline-gray-200 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      수정하기
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isLoading || visualizationMessageConfirmed}
+                      onClick={() => confirmVisualizationMessage(m.id)}
+                      className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {visualizationMessageConfirmed ? '확정됨' : '확정하기'}
+                    </button>
+                  </div>
+                ) : null}
                 {isPersonaSummary && personaArtifactKind ? (
                   <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
-                    {!personaArtifactWasVisualized ? (
+                    {!personaArtifactWasVisualized &&
+                    visualizationMessageConfirmed ? (
                       <button
                         type="button"
                         disabled={isLoading}
@@ -3916,7 +4520,8 @@ export default function ChatPage({
                 ) : null}
                 {directionResearchKind ? (
                   <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
-                    {!directionResearchWasVisualized ? (
+                    {!directionResearchWasVisualized &&
+                    visualizationMessageConfirmed ? (
                       <button
                         type="button"
                         disabled={isLoading}
@@ -3936,7 +4541,8 @@ export default function ChatPage({
                 ) : null}
                 {isStyleProposal ? (
                   <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
-                    {!visualizedDirectionMessageIds[m.id] ? (
+                    {!styleMoodboardWasVisualized &&
+                    visualizationMessageConfirmed ? (
                       <button
                         type="button"
                         disabled={isLoading}
@@ -4265,7 +4871,7 @@ export default function ChatPage({
                   답변 힌트
                 </h3>
                 <p className="mt-1 text-xs font-medium leading-5 text-slate-400">
-                  아래 예시 중 가까운 방향을 골라도 되고, 직접 입력해도 됩니다.
+                  프로젝트 맥락을 반영한 작성 방향입니다. 그대로 고르거나 직접 바꿔 입력해도 됩니다.
                 </p>
               </div>
               <button
@@ -4288,7 +4894,7 @@ export default function ChatPage({
                     setHintModalMessageId(null)
                     void sendChatAction(choice.value)
                   }}
-                  className="w-full rounded-xl bg-slate-50 px-3 py-2.5 text-left text-sm font-semibold leading-5 text-slate-700 transition hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="w-full rounded-xl bg-slate-50 px-3 py-2.5 text-left text-sm font-semibold leading-5 text-slate-700 break-words transition [overflow-wrap:anywhere] hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {choice.key}. {choice.label}
                 </button>

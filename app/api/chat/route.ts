@@ -107,6 +107,12 @@ type DirectionResearchKind =
   | 'consumption_keywords'
   | 'brand_positioning'
 
+type VisualizationRevisionTarget =
+  | PersonaFlowArtifactKind
+  | 'persona'
+  | DirectionResearchKind
+  | 'style_reference'
+
 const DEFAULT_STAGE_KEY: StageKey = 'step_0_start'
 
 function isStringArray(value: unknown): value is string[] {
@@ -372,10 +378,10 @@ function formatBudgetValue(value: unknown) {
   }
 
   if (value >= 10000) {
-    return '1억 원'
+    return '1억원'
   }
 
-  return `${value.toLocaleString('ko-KR')}만 원`
+  return `${value.toLocaleString('ko-KR')}만원`
 }
 
 function formatBudgetRange(requirements: Record<string, unknown>) {
@@ -383,14 +389,80 @@ function formatBudgetRange(requirements: Record<string, unknown>) {
   const maxBudget = formatBudgetValue(requirements.maxBudget)
 
   if (minBudget && maxBudget) {
-    return `${minBudget} ~ ${maxBudget}`
+    return `${minBudget} - ${maxBudget}`
   }
 
   return minBudget || maxBudget || '미정'
 }
 
+function formatBudgetMinimum(requirements: Record<string, unknown>) {
+  const minBudget = requirements.minBudget
+
+  if (typeof minBudget !== 'number' || Number.isNaN(minBudget)) {
+    return '미정'
+  }
+
+  return `$${Math.round(minBudget / 100)}K+`
+}
+
+function formatTimeline(duration: string) {
+  const normalized = duration.replace(/\s+/g, '')
+  const yearMatch = normalized.match(/(\d+(?:\.\d+)?)년/)
+  const monthMatch = normalized.match(/(\d+(?:\.\d+)?)(?:개월|달|months?|mo)/i)
+  const weekMatch = normalized.match(/(\d+(?:\.\d+)?)(?:주|weeks?|w)/i)
+
+  if (yearMatch) {
+    const months = Number(yearMatch[1]) * 12
+    return `${months}${normalized.includes('+') ? '+' : ''} Months`
+  }
+
+  if (monthMatch) {
+    const months = Number(monthMatch[1])
+    return `${months}${normalized.includes('+') ? '+' : ''} ${
+      months === 1 ? 'Month' : 'Months'
+    }`
+  }
+
+  if (weekMatch) {
+    const weeks = Number(weekMatch[1])
+    return `${weeks}${normalized.includes('+') ? '+' : ''} ${
+      weeks === 1 ? 'Week' : 'Weeks'
+    }`
+  }
+
+  return duration || '미정'
+}
+
 function cleanSingleLineText(text: string) {
   return text.replace(/\s+/g, ' ').trim()
+}
+
+function limitKoreanWords(text: string, maxWords: number) {
+  const words = text.split(/\s+/).filter(Boolean)
+
+  if (words.length <= maxWords) {
+    return text
+  }
+
+  return `${words.slice(0, maxWords).join(' ')}...`
+}
+
+function formatIdeaSummarySentence(text: string) {
+  const summary = limitKoreanWords(cleanSingleLineText(text), 100)
+
+  if (!summary) {
+    return ''
+  }
+
+  if (/[.!?。！？]$/.test(summary)) {
+    return summary
+  }
+
+  if (/(다|요|니다|습니다)$/.test(summary)) {
+    return `${summary}.`
+  }
+
+  return `${summary}가 목표입니다.`
 }
 
 function summarizeIdeaText(requirements: Record<string, unknown>) {
@@ -400,11 +472,7 @@ function summarizeIdeaText(requirements: Record<string, unknown>) {
     return '아직 아이디어 텍스트가 충분히 입력되지 않았습니다.'
   }
 
-  if (idea.length <= 180) {
-    return idea
-  }
-
-  return `${idea.slice(0, 180).trim()}...`
+  return formatIdeaSummarySentence(idea)
 }
 
 function buildProjectStartSnapshot(project: ProjectRecord | null) {
@@ -412,7 +480,7 @@ function buildProjectStartSnapshot(project: ProjectRecord | null) {
   const goal = getRequirementString(requirements, 'goal')
   const category = formatRequirementList(requirements, 'categories', 'otherCategory')
   const budgetRange = formatBudgetRange(requirements)
-  const duration = getRequirementString(requirements, 'duration')
+  const duration = formatTimeline(getRequirementString(requirements, 'duration'))
   const budgetAndDuration =
     budgetRange === '미정' && duration === '미정'
       ? '미정'
@@ -422,6 +490,7 @@ function buildProjectStartSnapshot(project: ProjectRecord | null) {
     title: project?.title || '새 프로젝트',
     goal,
     category,
+    budgetMinimum: formatBudgetMinimum(requirements),
     budgetRange,
     duration,
     budgetAndDuration,
@@ -429,6 +498,327 @@ function buildProjectStartSnapshot(project: ProjectRecord | null) {
     features: formatRequirementList(requirements, 'features', 'otherFeature'),
     usage: getRequirementString(requirements, 'usage'),
     ideaSummary: summarizeIdeaText(requirements),
+  }
+}
+
+type ProjectHintContext = ReturnType<typeof buildProjectHintContext>
+
+function getFirstListValue(value: string) {
+  return value
+    .split(/[,，/]|(?:\s*·\s*)|(?:\s+및\s+)|(?:\s+그리고\s+)/)
+    .map((item) => cleanSingleLineText(item))
+    .find((item) => item && item !== '미정')
+}
+
+function compactHintText(text: string, fallback: string, maxLength = 34) {
+  const cleaned = cleanSingleLineText(text)
+
+  if (!cleaned || cleaned === '미정') {
+    return fallback
+  }
+
+  if (cleaned.length <= maxLength) {
+    return cleaned
+  }
+
+  return `${cleaned.slice(0, maxLength).trim()}...`
+}
+
+function getHintRequirementText(
+  requirements: Record<string, unknown>,
+  key: string
+) {
+  const value = requirements[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function inferProjectSpaceLabel(text: string, productLabel: string) {
+  if (/책상|데스크|스터디|공부|학습|업무|사무|오피스/i.test(text)) {
+    return '책상과 작업 공간'
+  }
+
+  if (/주방|요리|식사|음식|식품|카페/i.test(text)) {
+    return '주방과 식사 공간'
+  }
+
+  if (/침실|수면|휴식|잠|리빙|거실/i.test(text)) {
+    return '생활과 휴식 공간'
+  }
+
+  if (/운동|피트니스|헬스|러닝|야외|이동|휴대/i.test(text)) {
+    return '이동과 활동 공간'
+  }
+
+  if (/욕실|세면|샤워|위생|뷰티/i.test(text)) {
+    return '관리와 위생 공간'
+  }
+
+  return `${productLabel} 사용 공간`
+}
+
+function inferProjectSituationLabel(text: string, productLabel: string) {
+  if (/공부|학습|시험|과제|자격|집중|몰입/i.test(text)) {
+    return '집중이 필요한 순간'
+  }
+
+  if (/수면|잠|침실|휴식|회복|긴장|스트레스/i.test(text)) {
+    return '휴식과 회복이 필요한 순간'
+  }
+
+  if (/요리|식사|주방|음식|보관|정리/i.test(text)) {
+    return '준비와 정리가 반복되는 순간'
+  }
+
+  if (/운동|피트니스|러닝|이동|야외|휴대/i.test(text)) {
+    return '이동하거나 활동하는 순간'
+  }
+
+  if (/위생|욕실|세면|샤워|뷰티|관리/i.test(text)) {
+    return '개인 관리가 필요한 순간'
+  }
+
+  return `${productLabel} 필요성이 생기는 순간`
+}
+
+function inferProjectPainLabel(text: string) {
+  if (/집중|몰입|방해|알림|산만|흐름/i.test(text)) {
+    return '흐름이 끊기는 불편'
+  }
+
+  if (/정리|보관|찾기|수납|공간/i.test(text)) {
+    return '정리와 보관이 번거로운 불편'
+  }
+
+  if (/시간|루틴|습관|반복|일정/i.test(text)) {
+    return '루틴을 유지하기 어려운 불편'
+  }
+
+  if (/휴대|이동|무게|작다|소형|손바닥/i.test(text)) {
+    return '이동 중 사용이 불편한 지점'
+  }
+
+  if (/위생|세척|청소|관리/i.test(text)) {
+    return '관리와 위생을 유지하기 어려운 지점'
+  }
+
+  return '현재 방식에서 반복되는 불편'
+}
+
+function buildProjectHintContext(project: ProjectRecord | null) {
+  const requirements = getRequirements(project)
+  const snapshot = buildProjectStartSnapshot(project)
+  const categoryValue = getFirstListValue(snapshot.category)
+  const featureValue = getFirstListValue(snapshot.features)
+  const rawIdea = getHintRequirementText(requirements, 'idea')
+  const productLabel = compactHintText(
+    categoryValue || snapshot.title,
+    '이 제품',
+    18
+  )
+  const ideaLabel = compactHintText(
+    rawIdea || snapshot.ideaSummary,
+    `${productLabel} 아이디어`,
+    28
+  )
+  const featureLabel = compactHintText(
+    featureValue || snapshot.features,
+    '핵심 기능',
+    18
+  )
+  const projectText = [
+    snapshot.title,
+    snapshot.category,
+    snapshot.features,
+    rawIdea,
+  ].join(' ')
+
+  return {
+    productLabel,
+    ideaLabel,
+    featureLabel,
+    spaceLabel: inferProjectSpaceLabel(projectText, productLabel),
+    situationLabel: inferProjectSituationLabel(projectText, productLabel),
+    painLabel: inferProjectPainLabel(projectText),
+  }
+}
+
+function buildContextualHintChoices(
+  context: ProjectHintContext,
+  kind:
+    | 'persona_user'
+    | 'persona_usage'
+    | 'persona_pain'
+    | 'persona_decision'
+    | 'problem_scene'
+    | 'problem_action'
+    | 'problem_interruption'
+    | 'problem_workaround'
+    | 'problem_residue'
+    | 'problem_change'
+    | 'experience_emotion_entry'
+    | 'experience_emotion_relief'
+    | 'experience_emotion_after'
+    | 'experience_behavior_start'
+    | 'experience_behavior_recovery'
+    | 'experience_behavior_routine'
+    | 'experience_space_impression'
+    | 'experience_space_meaning'
+    | 'experience_space_relation'
+    | 'relationship_interruption'
+    | 'relationship_space'
+    | 'relationship_time'
+    | 'problem_revision'
+): [string, string, string] {
+  const {
+    productLabel,
+    featureLabel,
+    ideaLabel,
+    spaceLabel,
+    situationLabel,
+    painLabel,
+  } = context
+  const productTerm = `‘${productLabel}’`
+  const featureTerm = `‘${featureLabel}’`
+
+  switch (kind) {
+    case 'persona_user':
+      return [
+        `사용자 단서: ${situationLabel}을 자주 겪는 사람`,
+        `행동 단서: ${featureTerm}이 반복적으로 필요한 사람`,
+        `맥락 단서: ${spaceLabel}에서 문제를 느끼는 사람`,
+      ]
+    case 'persona_usage':
+      return [
+        `상황 단서: ${situationLabel}이 시작되는 때`,
+        `기능 단서: ${featureTerm}이 실제로 필요한 때`,
+        `공간 단서: ${spaceLabel}에서 불편이 드러나는 때`,
+      ]
+    case 'persona_pain':
+      return [
+        `문제 단서: ${painLabel}`,
+        `기능 단서: ${featureTerm} 없이 생기는 번거로움`,
+        `공간 단서: ${spaceLabel}에서 반복되는 불편`,
+      ]
+    case 'persona_decision':
+      return [
+        `효과 단서: ${featureTerm}이 실제로 도움이 되는지`,
+        `사용 단서: ${productTerm} 지속 사용이 쉬운지`,
+        `공간 단서: ${spaceLabel}에 자연스럽게 맞는지`,
+      ]
+    case 'problem_scene':
+      return [
+        `상황 단서: ${situationLabel}이 생기는 장면`,
+        `공간 단서: ${spaceLabel}에서 불편이 드러나는 장면`,
+        `아이디어 단서: ${ideaLabel}가 떠오른 배경`,
+      ]
+    case 'problem_action':
+      return [
+        `행동 단서: ${situationLabel}에 들어가려던 중`,
+        `기능 단서: ${featureTerm}을 통해 해결하려던 중`,
+        `기존 방식 단서: ${spaceLabel}에서 버티던 중`,
+      ]
+    case 'problem_interruption':
+      return [
+        `방해 단서: ${painLabel}`,
+        `기능 단서: ${featureTerm}이 없어 생기는 끊김`,
+        `공간 단서: ${spaceLabel}에서 반복되는 자극`,
+      ]
+    case 'problem_workaround':
+      return [
+        `대응 단서: ${productTerm} 없이 임시로 해결함`,
+        `행동 단서: ${featureTerm} 대신 손으로 반복 처리함`,
+        `회피 단서: 불편한 상황을 미루거나 우회함`,
+      ]
+    case 'problem_residue':
+      return [
+        `문제 단서: ${painLabel}이 계속 남음`,
+        `기능 단서: ${featureTerm}이 없어 흐름이 끊김`,
+        `공간 단서: ${spaceLabel}에서 불편한 패턴이 반복됨`,
+      ]
+    case 'problem_change':
+      return [
+        `변화 단서: ${productTerm} 사용으로 상황이 더 자연스러워짐`,
+        `행동 단서: ${featureTerm} 덕분에 행동이 덜 끊김`,
+        `공간 단서: ${spaceLabel}에서 원하는 상태가 유지됨`,
+      ]
+    case 'experience_emotion_entry':
+      return [
+        `첫인상 단서: ${productTerm}을 믿고 써볼 수 있음`,
+        `아이디어 단서: ${ideaLabel}에서 기대감이 생김`,
+        `공간 단서: ${spaceLabel}에 놓였을 때 편안함`,
+      ]
+    case 'experience_emotion_relief':
+      return [
+        `해소 단서: ${painLabel}이 줄어드는 안도감`,
+        `기능 단서: ${featureTerm}을 통해 번거로움이 줄어듦`,
+        `상황 단서: ${situationLabel}이 매끄러워짐`,
+      ]
+    case 'experience_emotion_after':
+      return [
+        `사용 후 단서: ${productTerm} 사용 뒤의 만족감`,
+        `결과 단서: ${painLabel}이 줄었다는 성취감`,
+        `공간 단서: ${spaceLabel}이 정돈된 뒤의 여유감`,
+      ]
+    case 'experience_behavior_start':
+      return [
+        `시작 단서: ${situationLabel}을 더 쉽게 시작함`,
+        `기능 단서: ${featureTerm}을 자연스럽게 사용함`,
+        `루틴 단서: ${productTerm} 사용 행동이 반복됨`,
+      ]
+    case 'experience_behavior_recovery':
+      return [
+        `회복 단서: ${painLabel}이 생겨도 다시 돌아옴`,
+        `기능 단서: ${featureTerm}을 통해 흐름을 회복함`,
+        `공간 단서: ${spaceLabel}에서 행동을 다시 정렬함`,
+      ]
+    case 'experience_behavior_routine':
+      return [
+        `루틴 단서: ${productTerm} 사용이 생활 흐름에 들어옴`,
+        `상황 단서: ${situationLabel} 전후 행동이 일정해짐`,
+        `조절 단서: ${featureTerm}을 기준으로 스스로 조절함`,
+      ]
+    case 'experience_space_impression':
+      return [
+        `${spaceLabel}에 자연스럽게 놓이는 인상`,
+        `${productTerm} 역할이 바로 보이는 인상`,
+        `${ideaLabel}가 분위기로 드러나는 인상`,
+      ]
+    case 'experience_space_meaning':
+      return [
+        `${spaceLabel}을 더 안정적으로 느끼게 함`,
+        `${productTerm}이 행동의 기준점이 됨`,
+        `${situationLabel}을 떠올리게 하는 공간 신호가 됨`,
+      ]
+    case 'experience_space_relation':
+      return [
+        `${spaceLabel}의 기존 물건과 충돌하지 않음`,
+        `${featureTerm}이 생활 흐름에 자연스럽게 연결됨`,
+        `${productTerm}이 주변 행동을 조용히 도와줌`,
+      ]
+    case 'relationship_interruption':
+      return [
+        `${painLabel}을 만드는 기존 대안과 거리를 둠`,
+        `${featureTerm}이 방해 요소를 줄이는 기준이 됨`,
+        `${productTerm}이 사용자의 이탈을 다시 붙잡음`,
+      ]
+    case 'relationship_space':
+      return [
+        `${spaceLabel}이 ${productTerm}의 주 사용 맥락이 됨`,
+        `${productTerm}이 공간의 분위기를 정돈함`,
+        `${featureTerm}이 공간 안 행동을 바꿈`,
+      ]
+    case 'relationship_time':
+      return [
+        `${situationLabel}의 시작과 끝을 인식함`,
+        `${featureTerm}을 기준으로 시간을 조절함`,
+        `${painLabel}을 줄이기 위해 생활 리듬을 다시 잡음`,
+      ]
+    case 'problem_revision':
+      return [
+        `${spaceLabel}의 실제 상황을 더 구체화`,
+        `${painLabel}을 더 선명하게 정리`,
+        `${featureTerm}이 해결해야 할 필요를 재정리`,
+      ]
   }
 }
 
@@ -454,26 +844,23 @@ function buildProjectCardResponse({
     `**프로젝트명**  `,
     snapshot.title,
     '',
-    `**프로젝트 목표**  `,
-    snapshot.goal,
-    '',
     `**제품 카테고리**  `,
     snapshot.category,
     '',
-    `**예산/기간 범위**  `,
-    snapshot.budgetAndDuration,
-    '',
-    `**예상 크기**  `,
-    snapshot.size,
-    '',
-    `**주요 기능**  `,
-    snapshot.features,
-    '',
-    `**최종 활용 목적**  `,
-    snapshot.usage,
-    '',
     `**아이디어 정리**  `,
     snapshot.ideaSummary,
+    '',
+    `**Budget Minimum**  `,
+    snapshot.budgetMinimum,
+    '',
+    `**Target Timeline**  `,
+    snapshot.duration,
+    '',
+    `**Project Scope**  `,
+    snapshot.budgetRange,
+    '',
+    `**Key Features**  `,
+    snapshot.features,
     '',
     `**참고 자료**  `,
     referenceSummary,
@@ -505,7 +892,7 @@ function buildProjectStartSummaryResponse({
     `- 제품 모습/추가 설명: ${additionalDescription}`,
     '',
     '이 내용을 기준점으로 두고 다음 흐름을 확인하면 됩니다.',
-    '아래의 프로세스 확인하기 버튼을 눌러 0~7단계 진행 순서를 확인해주세요.',
+    '아래의 프로세스 확인하기 버튼을 눌러 1~7단계 진행 순서를 확인해주세요.',
   ].join('\n')
 }
 
@@ -1037,53 +1424,65 @@ function getPersonaClarificationStatus(text: string) {
   }
 }
 
-function buildPersonaClarificationQuestion(text: string) {
+function buildPersonaClarificationQuestion(
+  text: string,
+  project: ProjectRecord | null
+) {
   const status = getPersonaClarificationStatus(text)
+  const hintContext = buildProjectHintContext(project)
 
   if (!status.hasHumanProfile) {
+    const choices = buildContextualHintChoices(hintContext, 'persona_user')
+
     return [
       '좋아요. 페르소나 카드를 만들기 전에 사용자를 조금 더 구체화해야 합니다.',
       '',
       '이 제품을 가장 자주 쓸 사람의 나이대와 직업은 무엇에 가깝나요?',
       '',
-      'A. 20대 후반 직장인',
-      'B. 시험/자격 준비 중인 학습자',
-      'C. 집중 업무가 많은 프리랜서',
+      `A. ${choices[0]}`,
+      `B. ${choices[1]}`,
+      `C. ${choices[2]}`,
     ].join('\n')
   }
 
   if (!status.hasUsageContext) {
+    const choices = buildContextualHintChoices(hintContext, 'persona_usage')
+
     return [
       '좋아요. 사용자의 기본 윤곽은 잡혔고, 이제 실제 사용 장면이 필요합니다.',
       '',
       '그 사람이 하루 중 이 제품을 가장 필요로 하는 순간은 언제인가요?',
       '',
-      'A. 업무나 공부를 시작하기 직전',
-      'B. 집중이 끊긴 뒤 다시 시작할 때',
-      'C. 긴 작업을 마무리까지 유지해야 할 때',
+      `A. ${choices[0]}`,
+      `B. ${choices[1]}`,
+      `C. ${choices[2]}`,
     ].join('\n')
   }
 
   if (!status.hasPainPoint) {
+    const choices = buildContextualHintChoices(hintContext, 'persona_pain')
+
     return [
       '좋아요. 사용 장면은 잡혔고, 이제 해결해야 할 불편함을 좁히면 됩니다.',
       '',
       '그 순간에 사용자가 가장 크게 불편해하는 점은 무엇인가요?',
       '',
-      'A. 다시 몰입하기까지 시간이 오래 걸림',
-      'B. 주변 자극 때문에 쉽게 산만해짐',
-      'C. 집중 루틴을 꾸준히 유지하기 어려움',
+      `A. ${choices[0]}`,
+      `B. ${choices[1]}`,
+      `C. ${choices[2]}`,
     ].join('\n')
   }
+
+  const choices = buildContextualHintChoices(hintContext, 'persona_decision')
 
   return [
     '좋아요. 문제 상황까지 잡혔고, 마지막으로 선택 기준을 확인하면 페르소나 카드로 정리할 수 있습니다.',
     '',
     '이 사용자가 제품을 고를 때 가장 먼저 볼 기준은 무엇일까요?',
     '',
-    'A. 실제 집중 효과',
-    'B. 부담 없는 사용성',
-    'C. 책상 위에 어울리는 디자인',
+    `A. ${choices[0]}`,
+    `B. ${choices[1]}`,
+    `C. ${choices[2]}`,
   ].join('\n')
 }
 
@@ -1139,9 +1538,24 @@ const PERSONA_PROBLEM_QUESTIONS = {
 }
 
 const PERSONA_EXPERIENCE_QUESTIONS = {
-  emotion: /이\s*제품을\s*사용할\s*때\s*사용자가\s*어떤\s*감정을\s*느끼길\s*원하나요\?/i,
-  behavior: /이\s*제품을\s*통해\s*사용자의\s*행동이\s*어떻게\s*바뀌길\s*원하나요\?/i,
-  space: /이\s*제품이\s*놓이는\s*공간에서\s*어떤\s*의미를\s*가지면\s*좋을까요\?/i,
+  emotionEntry:
+    /(?:감정\s*1:\s*)?제품을\s*처음\s*사용할\s*때\s*사용자가\s*가장\s*먼저\s*어떤\s*정서를\s*느끼길\s*원하나요\?/i,
+  emotionRelief:
+    /(?:감정\s*2:\s*)?방해나\s*압박이\s*줄어들\s*때\s*어떤\s*감정\s*변화가\s*생기면\s*좋을까요\?/i,
+  emotionAfter:
+    /(?:감정\s*3:\s*)?사용을\s*마친\s*뒤\s*사용자가\s*어떤\s*감정을\s*남기길\s*원하나요\?/i,
+  behaviorStart:
+    /(?:행동\s*1:\s*)?제품이\s*사용자의\s*시작\s*행동을\s*어떻게\s*도와야\s*할까요\?/i,
+  behaviorRecovery:
+    /(?:행동\s*2:\s*)?흐름이\s*끊겼을\s*때\s*어떤\s*회복\s*행동이\s*생기면\s*좋을까요\?/i,
+  behaviorRoutine:
+    /(?:행동\s*3:\s*)?사용자가\s*시간과\s*루틴을\s*어떻게\s*다루게\s*되길\s*원하나요\?/i,
+  spaceImpression:
+    /(?:공간\s*1:\s*)?제품이\s*놓인\s*공간에서\s*어떤\s*첫인상을\s*주면\s*좋을까요\?/i,
+  spaceMeaning:
+    /(?:공간\s*2:\s*)?사용자가\s*그\s*공간을\s*어떻게\s*느끼게\s*만들면\s*좋을까요\?/i,
+  spaceRelation:
+    /(?:공간\s*3:\s*)?주변\s*물건이나\s*생활\s*흐름과\s*어떤\s*관계를\s*맺으면\s*좋을까요\?/i,
 }
 
 const PERSONA_RELATIONSHIP_QUESTIONS = {
@@ -1171,6 +1585,204 @@ function compactPersonaFlowValue(text: string, fallback: string) {
   }
 
   return `${cleaned.slice(0, 90).trim()}...`
+}
+
+const MAX_KEYWORD_CHARS = 10
+
+const SHORT_KEYWORD_RULES: Array<[RegExp, string]> = [
+  [/신뢰|믿고/, '신뢰감'],
+  [/기대/, '기대감'],
+  [/편안|편안함/, '편안함'],
+  [/안도/, '안도감'],
+  [/개운|번거로움.*줄/, '개운함'],
+  [/안정|매끄러/, '안정감'],
+  [/만족/, '만족감'],
+  [/성취|해냈/, '성취감'],
+  [/여유/, '여유감'],
+  [/시작과\s*끝|시간/, '시간 인식'],
+  [/쉽게\s*시작|시작/, '쉬운 시작'],
+  [/회복|다시\s*돌아|재몰입/, '흐름 회복'],
+  [/정렬/, '행동 정렬'],
+  [/루틴|반복/, '루틴 형성'],
+  [/조절/, '자기조절'],
+  [/생활\s*흐름|생활\s*연결/, '생활 연결'],
+  [/자연스럽게\s*놓|자연.*배치/, '자연 배치'],
+  [/역할/, '역할 명확'],
+  [/분위기/, '분위기 형성'],
+  [/기준점/, '행동 기준'],
+  [/공간\s*신호/, '공간 신호'],
+  [/충돌하지|조화/, '공간 조화'],
+  [/거리|방해/, '방해 완화'],
+  [/이탈/, '이탈 방지'],
+  [/정돈|정리/, '정돈감'],
+  [/보관|수납/, '보관 편의'],
+  [/위생|세척|관리/, '관리 용이'],
+  [/이동|휴대/, '휴대성'],
+  [/불편|문제/, '불편 해소'],
+]
+
+function trimKeywordLength(text: string) {
+  const cleaned = text.replace(/\s+/g, ' ').trim()
+  const chars = Array.from(cleaned)
+
+  if (chars.length <= MAX_KEYWORD_CHARS) {
+    return cleaned
+  }
+
+  return Array.from(cleaned.replace(/\s+/g, '')).slice(0, MAX_KEYWORD_CHARS).join('')
+}
+
+function splitKeywordCandidates(text: string) {
+  const cleaned = cleanPersonaFlowAnswer(text)
+    .replace(/^[^:：]{1,12}\s*단서\s*[:：]\s*/i, '')
+    .trim()
+  const keywordText = /[:：]/.test(cleaned)
+    ? cleaned.split(/[:：]/).slice(1).join(' ')
+    : cleaned
+
+  return keywordText
+    .split(
+      /[,，、/]|(?:\s+및\s+)|(?:\s+그리고\s+)|(?:(?:과|와)\s+)|(?:\s*·\s*)/g
+    )
+    .map((keyword) => keyword.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+}
+
+function toShortKeyword(text: string, fallback: string) {
+  const cleaned = cleanPersonaFlowAnswer(text)
+    .replace(/^[^:：]{1,12}\s*단서\s*[:：]\s*/i, '')
+    .replace(/[“”"']/g, '')
+    .replace(/[.!?。！？]$/g, '')
+    .trim()
+
+  for (const [pattern, keyword] of SHORT_KEYWORD_RULES) {
+    if (pattern.test(cleaned)) {
+      return keyword
+    }
+  }
+
+  const quotedMatch = cleaned.match(/[‘`](.{1,10})[’`]/)
+  if (quotedMatch?.[1]) {
+    return trimKeywordLength(quotedMatch[1])
+  }
+
+  const normalized = cleaned
+    .replace(/[‘’`]/g, '')
+    .replace(
+      /(느끼면|생기면|되면|하면|하기|함|됨|중|때|정도|인지|는지|필요한|필요|실제로|자연스럽게|반복적으로|계속|다시|스스로|사용자|제품|기존|방향|단서)\s*/g,
+      ''
+    )
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return trimKeywordLength(normalized || fallback)
+}
+
+function buildShortKeywordList(
+  text: string,
+  fallbackKeywords: string[],
+  targetCount: number
+) {
+  const seen = new Set<string>()
+  const keywords: string[] = []
+
+  for (const candidate of [...splitKeywordCandidates(text), ...fallbackKeywords]) {
+    const keyword = toShortKeyword(candidate, fallbackKeywords[0] ?? '핵심 키워드')
+    const normalized = keyword.replace(/\s+/g, '').toLowerCase()
+
+    if (!normalized || seen.has(normalized)) {
+      continue
+    }
+
+    seen.add(normalized)
+    keywords.push(keyword)
+
+    if (keywords.length === targetCount) {
+      break
+    }
+  }
+
+  return keywords
+}
+
+function ensureKoreanSentence(text: string) {
+  const cleaned = text.replace(/\s+/g, ' ').trim()
+
+  if (!cleaned) {
+    return ''
+  }
+
+  if (/[.!?。！？]$/.test(cleaned)) {
+    return cleaned
+  }
+
+  if (/(다|요|니다|습니다)$/.test(cleaned)) {
+    return `${cleaned}.`
+  }
+
+  return `${cleaned}을 중심으로 한다.`
+}
+
+function normalizeProblemStatementText(text: string) {
+  return text.replace(/[\s.,:;!?。！？'"]/g, '').trim()
+}
+
+function cleanupProblemStatementTitle(text: string) {
+  return text
+    .replace(/\.\.\.$/, '')
+    .replace(/^(사용자는|사용자가|기존 방식은|실제)\s*/, '')
+    .replace(/(?:상황을\s*다룬다|문제가\s*남는다|필요하다|원한다|기반으로\s*한다|이어진다)$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isGenericProblemStatementTitle(title: string) {
+  return /^(?:사용 맥락|문제 흐름|필요 방향|Context|Problems|Needs)(?:\s*요약)?$|^수정된\s*(?:사용 맥락|문제 흐름|필요 방향)$/i.test(
+    title.trim()
+  )
+}
+
+function summarizeProblemStatementTitle(description: string, fallback: string) {
+  const firstSentence = description
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(/[.!?。！？]/)[0]
+    ?.trim()
+  const colonTitle = firstSentence?.split(/[:：]/)[0]?.trim() || ''
+  const title = cleanupProblemStatementTitle(colonTitle)
+
+  if (
+    !title ||
+    normalizeProblemStatementText(title) === normalizeProblemStatementText(description)
+  ) {
+    return fallback
+  }
+
+  return title
+}
+
+function buildProblemStatementSection({
+  label,
+  title,
+  description,
+}: {
+  label: string
+  title: string
+  description: string
+}) {
+  const shouldSummarizeTitle =
+    isGenericProblemStatementTitle(title) ||
+    normalizeProblemStatementText(title) === normalizeProblemStatementText(description)
+  const sectionTitle = shouldSummarizeTitle
+    ? summarizeProblemStatementTitle(description, title)
+    : cleanupProblemStatementTitle(title)
+
+  return [
+    `**${label}**`,
+    `**${sectionTitle}**`,
+    description,
+    '',
+  ]
 }
 
 function getAnswerAfterQuestion(
@@ -1243,17 +1855,13 @@ function hasRecentProblemStatementsRevisionPrompt(messages: NormalizedMessage[])
   )
 }
 
-function buildProblemStatementsRevisionQuestion() {
+function buildProblemStatementsRevisionQuestion(hintContext: ProjectHintContext) {
   return buildPersonaQuestion({
     intro:
       '좋아요. Problem Statements 카드는 확정하지 않고 수정 상태로 둘게요.',
     question:
       'Problem Statements 카드에서 수정하고 싶은 부분을 어떤 방향으로 바꾸면 좋을까요?',
-    choices: [
-      '사용 장면을 더 구체적으로 바꾸고 싶어요',
-      '방해 요소나 불편함을 더 정확히 바꾸고 싶어요',
-      '원하는 해결 방향을 다시 정리하고 싶어요',
-    ],
+    choices: buildContextualHintChoices(hintContext, 'problem_revision'),
   })
 }
 
@@ -1262,7 +1870,12 @@ function extractSummaryFromVisualizationCommand(text: string) {
     .replace(/^시각화하기\s*/i, '')
     .replace(/<<AIDEE_PERSONA_FLOW_CARD:[\s\S]*?<<\/AIDEE_PERSONA_FLOW_CARD>>/g, '')
     .split('\n')
-    .filter((line) => !/아래의 시각화하기 버튼/.test(line))
+    .filter(
+      (line) =>
+        !/아래의 시각화하기 버튼|내용을\s*확인한\s*뒤\s*확정하기를\s*누르면\s*시각화하기\s*버튼이\s*나타납니다/.test(
+          line
+        )
+    )
     .join('\n')
     .trim()
 }
@@ -1333,9 +1946,14 @@ function buildPersonaFlowCardBlock(
   kind: PersonaFlowArtifactKind,
   summary: string
 ) {
+  const cardSummary =
+    kind === 'experience_keywords'
+      ? buildExperienceKeywordsCardSummary(summary)
+      : summary.trim()
+
   return [
     `<<AIDEE_PERSONA_FLOW_CARD:${kind}>>`,
-    summary.trim(),
+    cardSummary,
     '<</AIDEE_PERSONA_FLOW_CARD>>',
   ].join('\n')
 }
@@ -1360,76 +1978,68 @@ function buildPersonaQuestion({
   ].join('\n')
 }
 
-function buildProblemSituationQuestion() {
+function buildPersonaChoiceQuestion({
+  question,
+  choices,
+}: {
+  question: string
+  choices: [string, string, string]
+}) {
+  return [
+    question,
+    '',
+    `A. ${choices[0]}`,
+    `B. ${choices[1]}`,
+    `C. ${choices[2]}`,
+  ].join('\n')
+}
+
+function buildProblemSituationQuestion(hintContext: ProjectHintContext) {
   return buildPersonaQuestion({
     intro:
       'STEP 2에서는 먼저 한 사람의 사용 장면을 천천히 따라가며 문제의 맥락을 잡아볼게요.',
     question: '이 제품을 떠올리게 된 장면은 어떤 순간에 가까운가요?',
-    choices: [
-      '업무나 학습을 시작하려는 순간',
-      '집중이 끊긴 뒤 다시 돌아오려는 순간',
-      '휴식과 몰입을 전환해야 하는 순간',
-    ],
+    choices: buildContextualHintChoices(hintContext, 'problem_scene'),
   })
 }
 
-function buildProblemUserActionQuestion() {
+function buildProblemUserActionQuestion(hintContext: ProjectHintContext) {
   return buildPersonaQuestion({
     intro: '좋아요. 그 장면에서 사용자의 행동을 조금 더 가까이 보겠습니다.',
     question: '그 순간 사용자는 무엇을 하려던 중인가요?',
-    choices: [
-      '해야 할 일을 시작하려던 중',
-      '끊긴 흐름으로 다시 돌아가려던 중',
-      '휴식에서 몰입으로 전환하려던 중',
-    ],
+    choices: buildContextualHintChoices(hintContext, 'problem_action'),
   })
 }
 
-function buildProblemInterruptionQuestion() {
+function buildProblemInterruptionQuestion(hintContext: ProjectHintContext) {
   return buildPersonaQuestion({
     intro: '좋아요. 이제 그 흐름이 어디서 흔들리는지 살펴볼게요.',
     question: '그 흐름을 가장 자주 흐트러뜨리는 것은 무엇인가요?',
-    choices: [
-      '스마트폰 알림이나 확인 습관',
-      '주변 소음이나 시선',
-      '할 일과 시간 압박',
-    ],
+    choices: buildContextualHintChoices(hintContext, 'problem_interruption'),
   })
 }
 
-function buildProblemWorkaroundQuestion() {
+function buildProblemWorkaroundQuestion(hintContext: ProjectHintContext) {
   return buildPersonaQuestion({
     intro: '좋아요. 사용자가 지금 어떤 방식으로 버티고 있는지도 보겠습니다.',
     question: '지금은 그 상황을 어떻게 넘기고 있나요?',
-    choices: [
-      '타이머나 앱에 의존함',
-      '의지만으로 다시 시작하려고 함',
-      '잠시 미루거나 다른 일로 넘어감',
-    ],
+    choices: buildContextualHintChoices(hintContext, 'problem_workaround'),
   })
 }
 
-function buildProblemResidueQuestion() {
+function buildProblemResidueQuestion(hintContext: ProjectHintContext) {
   return buildPersonaQuestion({
     intro: '좋아요. 현재 방식이 충분하지 않은 지점을 더 분명히 잡아볼게요.',
     question: '그 방식이 반복될 때 결국 어떤 문제가 남나요?',
-    choices: [
-      '다시 몰입하기까지 시간이 오래 걸림',
-      '루틴이 쉽게 끊기고 지속되지 않음',
-      '시간을 놓쳐 피로감이나 불안이 쌓임',
-    ],
+    choices: buildContextualHintChoices(hintContext, 'problem_residue'),
   })
 }
 
-function buildProblemDesiredChangeQuestion() {
+function buildProblemDesiredChangeQuestion(hintContext: ProjectHintContext) {
   return buildPersonaQuestion({
     intro: '좋아요. 마지막으로 해결 이후의 변화를 그려보겠습니다.',
     question: '문제가 줄어든다면 사용자의 하루나 행동은 어떻게 달라질까요?',
-    choices: [
-      '끊겨도 빠르게 다시 몰입함',
-      '집중과 휴식의 리듬을 스스로 조절함',
-      '책상 앞 루틴이 자연스럽게 유지됨',
-    ],
+    choices: buildContextualHintChoices(hintContext, 'problem_change'),
   })
 }
 
@@ -1458,20 +2068,39 @@ function buildProblemStatementsSummary(messages: NormalizedMessage[]) {
     getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.desiredChange),
     '몰입 리듬을 스스로 회복하고 유지하는 변화'
   )
+  const contextDescription = [
+    ensureKoreanSentence(`${triggerScene}에서 사용자가 ${userAction} 상황을 다룬다`),
+    '실제 생활 공간 속 반복되는 행동 흐름과 사용 패턴을 기반으로 한다.',
+  ].join(' ')
+  const problemsDescription = [
+    ensureKoreanSentence(
+      `${interruption} 때문에 사용자는 ${workaround}로 대응하지만, ${residue} 문제가 남는다`
+    ),
+    '기존 방식은 문제를 해결하기보다 흐름을 끊거나 관리 부담을 늘리는 상황으로 이어진다.',
+  ].join(' ')
+  const needsDescription = [
+    ensureKoreanSentence(`${needs}가 필요하다`),
+    '사용자는 방해 요소를 억지로 참기보다 자연스럽게 행동을 이어가고 다시 돌아올 수 있는 환경을 원한다.',
+  ].join(' ')
 
   return [
     '## Problem Statements',
     '',
-    '**문제(현재 상황)**',
-    `- ${triggerScene}에 ${userAction}`,
-    '',
-    '**불편함**',
-    `- ${interruption} 때문에 ${workaround}로 대응하지만 ${residue}`,
-    '',
-    '**Needs**',
-    `- ${needs}`,
-    '',
-    '아래의 시각화하기 버튼을 누르면 Problem Statements 카드로 정리됩니다.',
+    ...buildProblemStatementSection({
+      label: '01. Context',
+      title: `${triggerScene.replace(/\.\.\.$/, '')}의 사용 맥락`,
+      description: contextDescription,
+    }),
+    ...buildProblemStatementSection({
+      label: '02. Problems',
+      title: `${interruption.replace(/\.\.\.$/, '')}로 인한 문제 흐름`,
+      description: problemsDescription,
+    }),
+    ...buildProblemStatementSection({
+      label: '03. Needs',
+      title: `${needs.replace(/\.\.\.$/, '')}를 위한 필요 방향`,
+      description: needsDescription,
+    }),
   ].join('\n')
 }
 
@@ -1479,19 +2108,28 @@ function buildRevisedProblemStatementsSummary(
   messages: NormalizedMessage[],
   revisionText: string
 ) {
-  const latestSummary = findLatestPersonaSummary(
+  const latestSummary = findLatestVisualizationSummary(
     messages,
     /##\s*Problem Statements/i
   )
-  const labels = ['문제(현재 상황)', '불편함', 'Needs']
-  let situation =
-    extractSummarySection(latestSummary, ['문제(현재 상황)'], labels) ||
+  const labels = [
+    '01. Context',
+    '02. Problems',
+    '03. Needs',
+    'Context',
+    'Problems',
+    'Needs',
+    '문제(현재 상황)',
+    '불편함',
+  ]
+  let context =
+    extractSummarySection(latestSummary, ['01. Context', 'Context', '문제(현재 상황)'], labels) ||
     '집중이 필요한 순간 반복적으로 문제 경험'
-  let discomfort =
-    extractSummarySection(latestSummary, ['불편함'], labels) ||
+  let problems =
+    extractSummarySection(latestSummary, ['02. Problems', 'Problems', '불편함'], labels) ||
     '기존 방식이 방해 요소를 줄여주지 못함'
   let needs =
-    extractSummarySection(latestSummary, ['Needs'], labels) ||
+    extractSummarySection(latestSummary, ['03. Needs', 'Needs'], labels) ||
     '몰입을 회복하고 루틴을 유지하는 해결 필요'
   const revision = compactPersonaFlowValue(
     revisionText,
@@ -1499,121 +2137,395 @@ function buildRevisedProblemStatementsSummary(
   )
 
   if (/장면|상황|언제|어디|순간|행동|하려던/i.test(revision)) {
-    situation = revision
+    context = revision
   } else if (/원|필요|해결|달라|변화|기대|목표/i.test(revision)) {
     needs = revision
   } else {
-    discomfort = revision
+    problems = revision
   }
 
   return [
     '## Problem Statements',
     '',
-    '**문제(현재 상황)**',
-    `- ${situation}`,
-    '',
-    '**불편함**',
-    `- ${discomfort}`,
-    '',
-    '**Needs**',
-    `- ${needs}`,
-    '',
-    '수정 내용을 반영했습니다. 아래의 시각화하기 버튼을 누르면 Problem Statements 카드로 다시 정리됩니다.',
+    ...buildProblemStatementSection({
+      label: '01. Context',
+      title: '사용 맥락 요약',
+      description: `${ensureKoreanSentence(context)} 이 맥락을 기준으로 사용자가 제품을 필요로 하는 장면과 생활 패턴을 다시 정리한다.`,
+    }),
+    ...buildProblemStatementSection({
+      label: '02. Problems',
+      title: '문제 흐름 요약',
+      description: `${ensureKoreanSentence(problems)} 반복되는 불편과 현재 대응 방식의 한계를 중심으로 문제를 다시 정리한다.`,
+    }),
+    ...buildProblemStatementSection({
+      label: '03. Needs',
+      title: '필요 방향 요약',
+      description: `${ensureKoreanSentence(needs)} 사용자가 기대하는 변화와 제품이 제공해야 할 지원 방향을 다시 정리한다.`,
+    }),
+    '수정 내용을 반영했습니다.',
   ].join('\n')
 }
 
-function buildExperienceEmotionQuestion() {
-  return buildPersonaQuestion({
-    intro:
-      'Problem Statements 카드가 만들어졌습니다. 다음은 제품에 기대하는 경험적 가치를 키워드로 정리해볼게요.',
+const EXPERIENCE_FALLBACK_KEYWORDS = {
+  emotion: [
+    '평온함',
+    '신뢰감',
+    '기대감',
+    '안도감',
+    '가벼움',
+    '개운함',
+    '성취감',
+    '자기효능감',
+    '만족감',
+    '안정감',
+    '몰입감',
+    '여유감',
+    '회복감',
+    '집중감',
+  ],
+  behavior: [
+    '쉽게 시작',
+    '자연스러운 전환',
+    '준비 시간 단축',
+    '빠른 재몰입',
+    '다시 정렬',
+    '방해 차단',
+    '루틴 형성',
+    '시간 인식',
+    '자기조절',
+    '지속성',
+    '집중 유지',
+    '행동 전환',
+    '습관화',
+    '우선순위 정리',
+  ],
+  space: [
+    '책상 위 오브제',
+    '정돈된 분위기',
+    '차분한 포인트',
+    '안전한 몰입 공간',
+    '개인화된 자리',
+    '조용한 존재감',
+    '자연스러운 배치',
+    '시각적 정돈',
+    '생활 리듬 연결',
+    '공간의 안정감',
+  ],
+}
+
+function splitExperienceKeywords(text: string) {
+  return splitKeywordCandidates(text).map((keyword) =>
+    keyword.replace(/^(감정|행동|공간)\s*[:：]\s*/i, '').trim()
+  )
+}
+
+function buildKeywordGroup(
+  answerTexts: string[],
+  fallbackKeywords: string[],
+  targetCount: number
+) {
+  const seen = new Set<string>()
+  const keywords: string[] = []
+
+  for (const keyword of [
+    ...answerTexts.flatMap(splitExperienceKeywords),
+    ...fallbackKeywords,
+  ]) {
+    const shortKeyword = toShortKeyword(keyword, fallbackKeywords[0] ?? '키워드')
+    const normalized = shortKeyword.replace(/\s+/g, '').toLowerCase()
+
+    if (!normalized || seen.has(normalized)) {
+      continue
+    }
+
+    seen.add(normalized)
+    keywords.push(shortKeyword)
+
+    if (keywords.length === targetCount) {
+      break
+    }
+  }
+
+  return keywords
+}
+
+function buildExperienceEmotionEntryQuestion(hintContext: ProjectHintContext) {
+  return buildPersonaChoiceQuestion({
     question:
-      '감정: 이 제품을 사용할 때 사용자가 어떤 감정을 느끼길 원하나요?',
-    choices: ['평온함', '개운함과 성취감', '안정감'],
+      '제품을 처음 사용할 때 사용자가 가장 먼저 어떤 정서를 느끼길 원하나요?',
+    choices: buildContextualHintChoices(
+      hintContext,
+      'experience_emotion_entry'
+    ),
   })
 }
 
-function buildExperienceBehaviorQuestion() {
-  return buildPersonaQuestion({
-    intro: '좋아요. 이제 제품이 사용자의 행동을 어떻게 바꾸면 좋을지 볼게요.',
+function buildExperienceEmotionReliefQuestion(hintContext: ProjectHintContext) {
+  return buildPersonaChoiceQuestion({
     question:
-      '행동: 이 제품을 통해 사용자의 행동이 어떻게 바뀌길 원하나요?',
-    choices: ['루틴 형성', '재몰입', '시간 인식과 자기조절'],
+      '방해나 압박이 줄어들 때 어떤 감정 변화가 생기면 좋을까요?',
+    choices: buildContextualHintChoices(
+      hintContext,
+      'experience_emotion_relief'
+    ),
   })
 }
 
-function buildExperienceSpaceQuestion() {
-  return buildPersonaQuestion({
-    intro: '좋아요. 마지막으로 이 제품이 놓이는 공간의 의미를 정리해볼게요.',
+function buildExperienceEmotionAfterQuestion(hintContext: ProjectHintContext) {
+  return buildPersonaChoiceQuestion({
     question:
-      '공간: 이 제품이 놓이는 공간에서 어떤 의미를 가지면 좋을까요?',
-    choices: ['책상 위 오브제', '정돈된 분위기', '조용한 존재감'],
+      '사용을 마친 뒤 사용자가 어떤 감정을 남기길 원하나요?',
+    choices: buildContextualHintChoices(
+      hintContext,
+      'experience_emotion_after'
+    ),
+  })
+}
+
+function buildExperienceBehaviorStartQuestion(hintContext: ProjectHintContext) {
+  return buildPersonaChoiceQuestion({
+    question:
+      '제품이 사용자의 시작 행동을 어떻게 도와야 할까요?',
+    choices: buildContextualHintChoices(
+      hintContext,
+      'experience_behavior_start'
+    ),
+  })
+}
+
+function buildExperienceBehaviorRecoveryQuestion(hintContext: ProjectHintContext) {
+  return buildPersonaChoiceQuestion({
+    question:
+      '흐름이 끊겼을 때 어떤 회복 행동이 생기면 좋을까요?',
+    choices: buildContextualHintChoices(
+      hintContext,
+      'experience_behavior_recovery'
+    ),
+  })
+}
+
+function buildExperienceBehaviorRoutineQuestion(hintContext: ProjectHintContext) {
+  return buildPersonaChoiceQuestion({
+    question:
+      '사용자가 시간과 루틴을 어떻게 다루게 되길 원하나요?',
+    choices: buildContextualHintChoices(
+      hintContext,
+      'experience_behavior_routine'
+    ),
+  })
+}
+
+function buildExperienceSpaceImpressionQuestion(hintContext: ProjectHintContext) {
+  return buildPersonaChoiceQuestion({
+    question:
+      '제품이 놓인 공간에서 어떤 첫인상을 주면 좋을까요?',
+    choices: buildContextualHintChoices(
+      hintContext,
+      'experience_space_impression'
+    ),
+  })
+}
+
+function buildExperienceSpaceMeaningQuestion(hintContext: ProjectHintContext) {
+  return buildPersonaChoiceQuestion({
+    question:
+      '사용자가 그 공간을 어떻게 느끼게 만들면 좋을까요?',
+    choices: buildContextualHintChoices(
+      hintContext,
+      'experience_space_meaning'
+    ),
+  })
+}
+
+function buildExperienceSpaceRelationQuestion(hintContext: ProjectHintContext) {
+  return buildPersonaChoiceQuestion({
+    question:
+      '주변 물건이나 생활 흐름과 어떤 관계를 맺으면 좋을까요?',
+    choices: buildContextualHintChoices(
+      hintContext,
+      'experience_space_relation'
+    ),
   })
 }
 
 function buildExperienceKeywordsSummary(messages: NormalizedMessage[]) {
-  const emotion = compactPersonaFlowValue(
-    getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.emotion),
-    '평온함, 개운함, 안정감'
+  const emotionKeywords = buildKeywordGroup(
+    [
+      getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.emotionEntry),
+      getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.emotionRelief),
+      getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.emotionAfter),
+    ],
+    EXPERIENCE_FALLBACK_KEYWORDS.emotion,
+    12
   )
-  const behavior = compactPersonaFlowValue(
-    getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.behavior),
-    '루틴 형성, 재몰입, 자기조절'
+  const behaviorKeywords = buildKeywordGroup(
+    [
+      getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.behaviorStart),
+      getAnswerAfterQuestion(
+        messages,
+        PERSONA_EXPERIENCE_QUESTIONS.behaviorRecovery
+      ),
+      getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.behaviorRoutine),
+    ],
+    EXPERIENCE_FALLBACK_KEYWORDS.behavior,
+    12
   )
-  const space = compactPersonaFlowValue(
-    getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.space),
-    '정돈된 분위기와 조용한 존재감'
+  const spaceKeywords = buildKeywordGroup(
+    [
+      getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.spaceImpression),
+      getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.spaceMeaning),
+      getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.spaceRelation),
+    ],
+    EXPERIENCE_FALLBACK_KEYWORDS.space,
+    8
   )
 
   return [
     '## Keywords: Experience',
     '',
-    '**감정**',
-    `- ${emotion}`,
+    '감정, 행동, 공간 관점의 질문을 바탕으로 총 32개의 경험 키워드를 정리했습니다.',
     '',
-    '**행동**',
-    `- ${behavior}`,
+    '**감정 Keywords (12)**',
+    `- ${emotionKeywords.join(', ')}`,
     '',
-    '**공간**',
-    `- ${space}`,
+    '**행동 Keywords (12)**',
+    `- ${behaviorKeywords.join(', ')}`,
     '',
-    '아래의 시각화하기 버튼을 누르면 Keywords: Experience 카드로 정리됩니다.',
+    '**공간 Keywords (8)**',
+    `- ${spaceKeywords.join(', ')}`,
+    '',
+    'Keywords: Experience 정리가 완료되었습니다.',
   ].join('\n')
 }
 
-function buildRelationshipInterruptionQuestion() {
+function buildRelationshipInterruptionQuestion(hintContext: ProjectHintContext) {
   return buildPersonaQuestion({
     intro:
       'Keywords: Experience 카드가 만들어졌습니다. 이제 사용자와 주변 요소 사이의 관계를 키워드로 정리해볼게요.',
     question:
       '기존 방해 요소와의 관계: 사용자와 기존 방해 요소는 어떤 관계에 가깝나요?',
-    choices: [
-      '스마트폰과 알림에 쉽게 이탈함',
-      '주변 소음과 시선에 민감하게 흔들림',
-      '할 일과 시간 압박에 계속 쫓김',
-    ],
+    choices: buildContextualHintChoices(hintContext, 'relationship_interruption'),
   })
 }
 
-function buildRelationshipSpaceQuestion() {
+function buildRelationshipSpaceQuestion(hintContext: ProjectHintContext) {
   return buildPersonaQuestion({
     intro: '좋아요. 이번에는 제품이 놓이는 공간과 사용자의 관계를 보겠습니다.',
     question:
       '제품이 놓이는 공간과의 관계: 사용자와 제품이 놓이는 공간은 어떤 관계에 가깝나요?',
-    choices: [
-      '책상을 몰입 공간으로 만들고 싶음',
-      '개인 공간을 안정적으로 정돈하고 싶음',
-      '개인화된 집중 신호가 필요함',
-    ],
+    choices: buildContextualHintChoices(hintContext, 'relationship_space'),
   })
 }
 
-function buildRelationshipTimeQuestion() {
+function buildRelationshipTimeQuestion(hintContext: ProjectHintContext) {
   return buildPersonaQuestion({
     intro: '좋아요. 마지막으로 집중과 휴식 시간을 어떻게 인식하는지 정리해볼게요.',
     question:
       '시간과의 관계: 사용자는 집중과 휴식 시간을 어떻게 인식하길 원하나요?',
-    choices: ['흐름', '리듬과 전환', '예측 가능성'],
+    choices: buildContextualHintChoices(hintContext, 'relationship_time'),
   })
+}
+
+function extractKeywordSectionFromSummary(
+  summary: string,
+  labels: string[],
+  boundaryLabels: string[]
+) {
+  const normalized = summary.replace(/\r\n/g, '\n')
+  const escape = (value: string) =>
+    value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const boundary = boundaryLabels.map(escape).join('|')
+
+  for (const label of labels) {
+    const regex = new RegExp(
+      `(?:^|\\n)\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?${escape(
+        label
+      )}(?:\\*\\*)?\\s*\\n([\\s\\S]*?)(?=\\n\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?(?:${boundary})(?:\\*\\*)?\\s*\\n|$)`,
+      'i'
+    )
+    const match = normalized.match(regex)
+
+    if (match?.[1]) {
+      return splitKeywordCandidates(match[1])
+    }
+  }
+
+  return []
+}
+
+function uniqueKeywords(keywords: string[]) {
+  const seen = new Set<string>()
+  const unique: string[] = []
+
+  for (const keyword of keywords) {
+    const shortKeyword = toShortKeyword(keyword, keyword)
+    const normalized = shortKeyword.replace(/\s+/g, '').toLowerCase()
+
+    if (!normalized || seen.has(normalized)) {
+      continue
+    }
+
+    seen.add(normalized)
+    unique.push(shortKeyword)
+  }
+
+  return unique
+}
+
+function buildExperienceIntroSentence(keywords: string[]) {
+  const [context = '직관적인 사용 흐름', valueA = '신뢰감', valueB = '유연함', outcome = '지속 가능한 변화'] =
+    keywords
+
+  return `${context} 속에서, ${valueA}와 ${valueB}으로 ${outcome}을 경험하는 제품`
+}
+
+function buildExperienceKeywordsCardSummary(summary: string) {
+  const sectionLabels = [
+    '감정 Keywords (12)',
+    '행동 Keywords (12)',
+    '공간 Keywords (8)',
+    '감정',
+    '행동',
+    '공간',
+  ]
+  const keywords = uniqueKeywords([
+    ...extractKeywordSectionFromSummary(
+      summary,
+      ['감정 Keywords (12)', '감정'],
+      sectionLabels
+    ),
+    ...extractKeywordSectionFromSummary(
+      summary,
+      ['행동 Keywords (12)', '행동'],
+      sectionLabels
+    ),
+    ...extractKeywordSectionFromSummary(
+      summary,
+      ['공간 Keywords (8)', '공간'],
+      sectionLabels
+    ),
+  ])
+  const featured = keywords.slice(0, 6)
+  const intro = buildExperienceIntroSentence(featured)
+  const description =
+    featured.length > 0
+      ? `이 제품은 사용자가 자연스럽게 시작하고 흐름을 회복하며, 사용 후에는 안정감과 만족감을 느끼는 경험을 제공합니다. 공간 안에서는 부담 없이 놓이고 생활 흐름과 연결되는 방향을 지향하며, ${featured.join(
+          ', '
+        )} 같은 감각을 중심으로 제품 경험을 제안합니다.`
+      : '이 제품은 사용자가 쉽게 시작하고 자연스럽게 몰입하며, 사용 후에는 긍정적인 감정과 안정된 리듬을 느끼는 경험을 지향합니다. 제품의 기능과 공간 속 존재감이 함께 연결되는 방향을 제안합니다.'
+
+  return [
+    '## Keywords: Experience',
+    '',
+    '**한줄 소개**',
+    intro,
+    '',
+    '**내용**',
+    description,
+    '',
+    '**Keywords**',
+    `- ${keywords.join(', ')}`,
+  ].join('\n')
 }
 
 function buildRelationshipKeywordsSummary(messages: NormalizedMessage[]) {
@@ -1632,20 +2544,33 @@ function buildRelationshipKeywordsSummary(messages: NormalizedMessage[]) {
     getAnswerAfterQuestion(messages, PERSONA_RELATIONSHIP_QUESTIONS.time),
     '사용자 - 시간: 흐름, 리듬, 전환'
   )
+  const interruptionKeywords = buildShortKeywordList(
+    interruption,
+    ['거리두기', '이탈 방지', '방해 완화'],
+    3
+  )
+  const spaceKeywords = buildShortKeywordList(
+    space,
+    ['공간 정돈', '몰입 공간', '안정감'],
+    3
+  )
+  const timeKeywords = buildShortKeywordList(
+    time,
+    ['시간 인식', '리듬 전환', '예측 가능'],
+    3
+  )
 
   return [
     '## Keywords: Relationship',
     '',
     '**기존 방해 요소와의 관계**',
-    `- ${interruption}`,
+    `- ${interruptionKeywords.join(', ')}`,
     '',
     '**제품이 놓이는 공간과의 관계**',
-    `- ${space}`,
+    `- ${spaceKeywords.join(', ')}`,
     '',
     '**집중/휴식 시간과의 관계**',
-    `- ${time}`,
-    '',
-    '아래의 시각화하기 버튼을 누르면 Keywords: Relationship 카드로 정리됩니다.',
+    `- ${timeKeywords.join(', ')}`,
   ].join('\n')
 }
 
@@ -1667,19 +2592,59 @@ function buildPersonaCompositeSummary({
   const relationshipText =
     relationshipSummary ||
     findLatestPersonaSummary(messages, /##\s*Keywords:\s*Relationship/i)
-  const problemLabels = ['문제(현재 상황)', '불편함', 'Needs']
-  const experienceLabels = ['감정', '행동', '공간']
+  const problemLabels = [
+    '01. Context',
+    '02. Problems',
+    '03. Needs',
+    'Context',
+    'Problems',
+    'Needs',
+    '문제(현재 상황)',
+    '불편함',
+  ]
+  const experienceLabels = [
+    '감정 Keywords (12)',
+    '행동 Keywords (12)',
+    '공간 Keywords (8)',
+    '감정',
+    '행동',
+    '공간',
+  ]
   const relationshipLabels = [
     '기존 방해 요소와의 관계',
     '제품이 놓이는 공간과의 관계',
     '집중/휴식 시간과의 관계',
   ]
-  const situation = extractSummarySection(problemSummary, ['문제(현재 상황)'], problemLabels)
-  const discomfort = extractSummarySection(problemSummary, ['불편함'], problemLabels)
-  const needs = extractSummarySection(problemSummary, ['Needs'], problemLabels)
-  const emotion = extractSummarySection(experienceSummary, ['감정'], experienceLabels)
-  const behavior = extractSummarySection(experienceSummary, ['행동'], experienceLabels)
-  const spaceValue = extractSummarySection(experienceSummary, ['공간'], experienceLabels)
+  const situation = extractSummarySection(
+    problemSummary,
+    ['01. Context', 'Context', '문제(현재 상황)'],
+    problemLabels
+  )
+  const discomfort = extractSummarySection(
+    problemSummary,
+    ['02. Problems', 'Problems', '불편함'],
+    problemLabels
+  )
+  const needs = extractSummarySection(
+    problemSummary,
+    ['03. Needs', 'Needs'],
+    problemLabels
+  )
+  const emotion = extractSummarySection(
+    experienceSummary,
+    ['감정 Keywords (12)', '감정'],
+    experienceLabels
+  )
+  const behavior = extractSummarySection(
+    experienceSummary,
+    ['행동 Keywords (12)', '행동'],
+    experienceLabels
+  )
+  const spaceValue = extractSummarySection(
+    experienceSummary,
+    ['공간 Keywords (8)', '공간'],
+    experienceLabels
+  )
   const interruptionRelation = extractSummarySection(relationshipText, [
     '기존 방해 요소와의 관계',
   ], relationshipLabels)
@@ -1714,8 +2679,6 @@ function buildPersonaCompositeSummary({
     `- ${interruptionRelation || '사용자 - 방해 요소: 유혹, 이탈, 알림'}`,
     `- ${spaceRelation || '사용자 - 공간: 몰입 공간, 안정감'}`,
     `- ${timeRelation || '사용자 - 시간: 흐름, 리듬, 전환'}`,
-    '',
-    '아래의 시각화하기 버튼을 누르면 Persona Card가 만들어집니다.',
   ].join('\n')
 }
 
@@ -1753,11 +2716,15 @@ function buildPersonaFlowResponse({
   messages,
   forceImageGeneration,
   lastUserMessage,
+  project,
 }: {
   messages: NormalizedMessage[]
   forceImageGeneration: ChatRequestBody['forceImageGeneration']
   lastUserMessage: string
+  project: ProjectRecord | null
 }) {
+  const hintContext = buildProjectHintContext(project)
+
   if (forceImageGeneration === 'problem_statements_visualization') {
     const summary = extractSummaryFromVisualizationCommand(lastUserMessage)
 
@@ -1776,7 +2743,7 @@ function buildPersonaFlowResponse({
     return buildPersonaFlowVisualizationResponse({
       kind: 'experience_keywords',
       summary,
-      nextText: buildRelationshipInterruptionQuestion(),
+      nextText: buildRelationshipInterruptionQuestion(hintContext),
       reason: 'experience_keywords_visualized',
     })
   }
@@ -1808,10 +2775,36 @@ function buildPersonaFlowResponse({
   const hasPersonaSummary = messages.some((message) =>
     /##\s*Persona Summary/i.test(message.content)
   )
+  const revisionRequestTarget =
+    getVisualizationRevisionTargetFromText(lastUserMessage)
+  const recentRevisionTarget = getRecentVisualizationRevisionTarget(messages)
+
+  if (isPersonaVisualizationRevisionTarget(revisionRequestTarget)) {
+    return buildStageTextResponse({
+      text: buildVisualizationRevisionQuestion(revisionRequestTarget),
+      stageKey: 'step_2_persona',
+      reason: `${revisionRequestTarget}_revision_question`,
+    })
+  }
+
+  if (
+    isPersonaVisualizationRevisionTarget(recentRevisionTarget) &&
+    lastUserMessage.trim()
+  ) {
+    return buildStageTextResponse({
+      text: buildRevisedPersonaVisualizationSummary({
+        target: recentRevisionTarget,
+        messages,
+        revisionText: lastUserMessage,
+      }),
+      stageKey: 'step_2_persona',
+      reason: `${recentRevisionTarget}_revised_summary`,
+    })
+  }
 
   if (!hasProblemSummary) {
     if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.triggerScene)) {
-      return new Response(buildProblemSituationQuestion(), {
+      return new Response(buildProblemSituationQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
@@ -1823,7 +2816,7 @@ function buildPersonaFlowResponse({
     }
 
     if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.userAction)) {
-      return new Response(buildProblemUserActionQuestion(), {
+      return new Response(buildProblemUserActionQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
@@ -1835,7 +2828,7 @@ function buildPersonaFlowResponse({
     }
 
     if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.interruption)) {
-      return new Response(buildProblemInterruptionQuestion(), {
+      return new Response(buildProblemInterruptionQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
@@ -1847,7 +2840,7 @@ function buildPersonaFlowResponse({
     }
 
     if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.workaround)) {
-      return new Response(buildProblemWorkaroundQuestion(), {
+      return new Response(buildProblemWorkaroundQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
@@ -1859,7 +2852,7 @@ function buildPersonaFlowResponse({
     }
 
     if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.residue)) {
-      return new Response(buildProblemResidueQuestion(), {
+      return new Response(buildProblemResidueQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
@@ -1871,7 +2864,7 @@ function buildPersonaFlowResponse({
     }
 
     if (!getAnswerAfterQuestion(messages, PERSONA_PROBLEM_QUESTIONS.desiredChange)) {
-      return new Response(buildProblemDesiredChangeQuestion(), {
+      return new Response(buildProblemDesiredChangeQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
@@ -1898,7 +2891,7 @@ function buildPersonaFlowResponse({
     isProblemStatementsConfirmation(lastUserMessage)
 
   if (!hasPersonaFlowCard(messages, 'problem_statements')) {
-    return new Response('먼저 Problem Statements 정리 아래의 시각화하기 버튼을 눌러 카드를 만들어주세요.', {
+    return new Response('먼저 Problem Statements 정리를 확인하고 확정한 뒤 시각화하기 버튼을 눌러 카드를 만들어주세요.', {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
         'x-aidee-current-stage': 'step_2_persona',
@@ -1911,7 +2904,7 @@ function buildPersonaFlowResponse({
 
   if (!problemStatementsConfirmed) {
     if (isProblemStatementsRevisionRequest(lastUserMessage)) {
-      return new Response(buildProblemStatementsRevisionQuestion(), {
+      return new Response(buildProblemStatementsRevisionQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
@@ -1952,38 +2945,155 @@ function buildPersonaFlowResponse({
   }
 
   if (!hasExperienceSummary) {
-    if (!getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.emotion)) {
-      return new Response(buildExperienceEmotionQuestion(), {
+    if (
+      !getAnswerAfterQuestion(
+        messages,
+        PERSONA_EXPERIENCE_QUESTIONS.emotionEntry
+      )
+    ) {
+      return new Response(buildExperienceEmotionEntryQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
           'x-aidee-next-stage': 'step_2_persona',
           'x-aidee-transition': 'no',
-          'x-aidee-reason': 'experience_emotion_question',
+          'x-aidee-reason': 'experience_emotion_entry_question',
         },
       })
     }
 
-    if (!getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.behavior)) {
-      return new Response(buildExperienceBehaviorQuestion(), {
+    if (
+      !getAnswerAfterQuestion(
+        messages,
+        PERSONA_EXPERIENCE_QUESTIONS.emotionRelief
+      )
+    ) {
+      return new Response(buildExperienceEmotionReliefQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
           'x-aidee-next-stage': 'step_2_persona',
           'x-aidee-transition': 'no',
-          'x-aidee-reason': 'experience_behavior_question',
+          'x-aidee-reason': 'experience_emotion_relief_question',
         },
       })
     }
 
-    if (!getAnswerAfterQuestion(messages, PERSONA_EXPERIENCE_QUESTIONS.space)) {
-      return new Response(buildExperienceSpaceQuestion(), {
+    if (
+      !getAnswerAfterQuestion(
+        messages,
+        PERSONA_EXPERIENCE_QUESTIONS.emotionAfter
+      )
+    ) {
+      return new Response(buildExperienceEmotionAfterQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
           'x-aidee-next-stage': 'step_2_persona',
           'x-aidee-transition': 'no',
-          'x-aidee-reason': 'experience_space_question',
+          'x-aidee-reason': 'experience_emotion_after_question',
+        },
+      })
+    }
+
+    if (
+      !getAnswerAfterQuestion(
+        messages,
+        PERSONA_EXPERIENCE_QUESTIONS.behaviorStart
+      )
+    ) {
+      return new Response(buildExperienceBehaviorStartQuestion(hintContext), {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'x-aidee-current-stage': 'step_2_persona',
+          'x-aidee-next-stage': 'step_2_persona',
+          'x-aidee-transition': 'no',
+          'x-aidee-reason': 'experience_behavior_start_question',
+        },
+      })
+    }
+
+    if (
+      !getAnswerAfterQuestion(
+        messages,
+        PERSONA_EXPERIENCE_QUESTIONS.behaviorRecovery
+      )
+    ) {
+      return new Response(buildExperienceBehaviorRecoveryQuestion(hintContext), {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'x-aidee-current-stage': 'step_2_persona',
+          'x-aidee-next-stage': 'step_2_persona',
+          'x-aidee-transition': 'no',
+          'x-aidee-reason': 'experience_behavior_recovery_question',
+        },
+      })
+    }
+
+    if (
+      !getAnswerAfterQuestion(
+        messages,
+        PERSONA_EXPERIENCE_QUESTIONS.behaviorRoutine
+      )
+    ) {
+      return new Response(buildExperienceBehaviorRoutineQuestion(hintContext), {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'x-aidee-current-stage': 'step_2_persona',
+          'x-aidee-next-stage': 'step_2_persona',
+          'x-aidee-transition': 'no',
+          'x-aidee-reason': 'experience_behavior_routine_question',
+        },
+      })
+    }
+
+    if (
+      !getAnswerAfterQuestion(
+        messages,
+        PERSONA_EXPERIENCE_QUESTIONS.spaceImpression
+      )
+    ) {
+      return new Response(buildExperienceSpaceImpressionQuestion(hintContext), {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'x-aidee-current-stage': 'step_2_persona',
+          'x-aidee-next-stage': 'step_2_persona',
+          'x-aidee-transition': 'no',
+          'x-aidee-reason': 'experience_space_impression_question',
+        },
+      })
+    }
+
+    if (
+      !getAnswerAfterQuestion(
+        messages,
+        PERSONA_EXPERIENCE_QUESTIONS.spaceMeaning
+      )
+    ) {
+      return new Response(buildExperienceSpaceMeaningQuestion(hintContext), {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'x-aidee-current-stage': 'step_2_persona',
+          'x-aidee-next-stage': 'step_2_persona',
+          'x-aidee-transition': 'no',
+          'x-aidee-reason': 'experience_space_meaning_question',
+        },
+      })
+    }
+
+    if (
+      !getAnswerAfterQuestion(
+        messages,
+        PERSONA_EXPERIENCE_QUESTIONS.spaceRelation
+      )
+    ) {
+      return new Response(buildExperienceSpaceRelationQuestion(hintContext), {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'x-aidee-current-stage': 'step_2_persona',
+          'x-aidee-next-stage': 'step_2_persona',
+          'x-aidee-transition': 'no',
+          'x-aidee-reason': 'experience_space_relation_question',
         },
       })
     }
@@ -2000,7 +3110,7 @@ function buildPersonaFlowResponse({
   }
 
   if (!hasPersonaFlowCard(messages, 'experience_keywords')) {
-    return new Response('먼저 Keywords: Experience 정리 아래의 시각화하기 버튼을 눌러 카드를 만들어주세요.', {
+    return new Response('먼저 Keywords: Experience 정리를 확인하고 확정한 뒤 시각화하기 버튼을 눌러 카드를 만들어주세요.', {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
         'x-aidee-current-stage': 'step_2_persona',
@@ -2018,7 +3128,7 @@ function buildPersonaFlowResponse({
         PERSONA_RELATIONSHIP_QUESTIONS.interruption
       )
     ) {
-      return new Response(buildRelationshipInterruptionQuestion(), {
+      return new Response(buildRelationshipInterruptionQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
@@ -2030,7 +3140,7 @@ function buildPersonaFlowResponse({
     }
 
     if (!getAnswerAfterQuestion(messages, PERSONA_RELATIONSHIP_QUESTIONS.space)) {
-      return new Response(buildRelationshipSpaceQuestion(), {
+      return new Response(buildRelationshipSpaceQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
@@ -2042,7 +3152,7 @@ function buildPersonaFlowResponse({
     }
 
     if (!getAnswerAfterQuestion(messages, PERSONA_RELATIONSHIP_QUESTIONS.time)) {
-      return new Response(buildRelationshipTimeQuestion(), {
+      return new Response(buildRelationshipTimeQuestion(hintContext), {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'x-aidee-current-stage': 'step_2_persona',
@@ -2065,7 +3175,7 @@ function buildPersonaFlowResponse({
   }
 
   if (!hasPersonaFlowCard(messages, 'relationship_keywords')) {
-    return new Response('먼저 Keywords: Relationship 정리 아래의 시각화하기 버튼을 눌러 카드를 만들어주세요.', {
+    return new Response('먼저 Keywords: Relationship 정리를 확인하고 확정한 뒤 시각화하기 버튼을 눌러 카드를 만들어주세요.', {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
         'x-aidee-current-stage': 'step_2_persona',
@@ -2107,6 +3217,291 @@ const DIRECTION_CARD_LABELS: Record<DirectionResearchKind, string> = {
   market_size: 'Tam Sam Som',
   consumption_keywords: 'Keywords:Consumption',
   brand_positioning: 'Positioning Map: Brand',
+}
+
+const VISUALIZATION_REVISION_TARGET_LABELS: Record<
+  VisualizationRevisionTarget,
+  string
+> = {
+  problem_statements: 'Problem Statements',
+  experience_keywords: 'Keywords: Experience',
+  relationship_keywords: 'Keywords: Relationship',
+  persona: 'Persona Summary',
+  market_size: '시장 규모 리서치',
+  consumption_keywords: '소비 트렌드 리서치',
+  brand_positioning: '경쟁사 리서치',
+  style_reference: '스타일 레퍼런스',
+}
+
+function isPersonaVisualizationRevisionTarget(
+  target: VisualizationRevisionTarget | null
+): target is PersonaFlowArtifactKind | 'persona' {
+  return (
+    target === 'problem_statements' ||
+    target === 'experience_keywords' ||
+    target === 'relationship_keywords' ||
+    target === 'persona'
+  )
+}
+
+function isDirectionVisualizationRevisionTarget(
+  target: VisualizationRevisionTarget | null
+): target is DirectionResearchKind {
+  return (
+    target === 'market_size' ||
+    target === 'consumption_keywords' ||
+    target === 'brand_positioning'
+  )
+}
+
+function getVisualizationRevisionTargetFromText(
+  text: string
+): VisualizationRevisionTarget | null {
+  if (!/^수정하기\s*:/i.test(text)) {
+    return null
+  }
+
+  if (/Problem\s*Statements|문제\s*정리/i.test(text)) {
+    return 'problem_statements'
+  }
+
+  if (/Keywords:\s*Experience|경험\s*키워드/i.test(text)) {
+    return 'experience_keywords'
+  }
+
+  if (/Keywords:\s*Relationship|관계\s*키워드/i.test(text)) {
+    return 'relationship_keywords'
+  }
+
+  if (/Persona\s*Summary|Persona\s*Card|페르소나/i.test(text)) {
+    return 'persona'
+  }
+
+  if (/시장\s*규모|Tam\s*Sam\s*Som/i.test(text)) {
+    return 'market_size'
+  }
+
+  if (/소비\s*트렌드|소비트렌드|Consumption/i.test(text)) {
+    return 'consumption_keywords'
+  }
+
+  if (/경쟁사|Positioning\s*Map|Brand/i.test(text)) {
+    return 'brand_positioning'
+  }
+
+  if (/스타일|레퍼런스|무드보드/i.test(text)) {
+    return 'style_reference'
+  }
+
+  return null
+}
+
+function getRecentVisualizationRevisionTarget(
+  messages: NormalizedMessage[]
+): VisualizationRevisionTarget | null {
+  const latestAssistant = messages
+    .slice()
+    .reverse()
+    .find((message) => message.role === 'assistant')
+
+  if (!latestAssistant || !/수정하고\s*싶은\s*방향/i.test(latestAssistant.content)) {
+    return null
+  }
+
+  return (
+    (Object.entries(VISUALIZATION_REVISION_TARGET_LABELS).find(([, label]) =>
+      latestAssistant.content.includes(`${label} 수정`)
+    )?.[0] as VisualizationRevisionTarget | undefined) ?? null
+  )
+}
+
+function buildVisualizationRevisionQuestion(target: VisualizationRevisionTarget) {
+  const label = VISUALIZATION_REVISION_TARGET_LABELS[target]
+
+  return [
+    `## ${label} 수정`,
+    '',
+    `${label}에서 수정하고 싶은 방향을 한 문장으로 입력해주세요.`,
+    '입력한 내용을 반영해 다시 정리하고, 확인 후 확정할 수 있게 보여드릴게요.',
+  ].join('\n')
+}
+
+function buildStageTextResponse({
+  text,
+  stageKey,
+  reason,
+}: {
+  text: string
+  stageKey: StageKey
+  reason: string
+}) {
+  return new Response(text, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'x-aidee-current-stage': stageKey,
+      'x-aidee-next-stage': stageKey,
+      'x-aidee-transition': 'no',
+      'x-aidee-reason': reason,
+    },
+  })
+}
+
+function findLatestVisualizationSummary(
+  messages: NormalizedMessage[],
+  headingPattern: RegExp
+) {
+  return (
+    messages
+      .map((message) => message.content)
+      .slice()
+      .reverse()
+      .find(
+        (content) =>
+          headingPattern.test(content) && !/수정하고\s*싶은\s*방향/i.test(content)
+      ) ?? ''
+  )
+}
+
+function stripVisualizationConfirmationInstruction(text: string) {
+  return text
+    .split('\n')
+    .filter(
+      (line) =>
+        !/내용을\s*확인한\s*뒤\s*확정하기를\s*누르면\s*시각화하기\s*버튼이\s*나타납니다/i.test(
+          line
+        )
+    )
+    .join('\n')
+    .trim()
+}
+
+function formatRevisionDirection(text: string) {
+  const cleaned = cleanSingleLineText(
+    text.replace(/^수정하기\s*:\s*/i, '').replace(/^.+?내용을\s*수정하고\s*싶어요\.?/i, '')
+  )
+
+  if (!cleaned) {
+    return '사용자가 요청한 수정 방향을 반영한다.'
+  }
+
+  if (/[.!?。！？]$/.test(cleaned)) {
+    return cleaned
+  }
+
+  if (/(다|요|니다|습니다)$/.test(cleaned)) {
+    return `${cleaned}.`
+  }
+
+  return `${cleaned} 방향으로 조정한다.`
+}
+
+function buildGenericRevisedVisualizationSummary({
+  baseSummary,
+  fallbackHeading,
+  revisionText,
+}: {
+  baseSummary: string
+  fallbackHeading: string
+  revisionText: string
+}) {
+  const base = stripVisualizationConfirmationInstruction(baseSummary) || fallbackHeading
+
+  return [
+    base,
+    '',
+    '**수정 반영 방향**',
+    `- ${formatRevisionDirection(revisionText)}`,
+    '',
+    '수정 내용을 반영했습니다.',
+  ].join('\n')
+}
+
+function buildRevisedPersonaVisualizationSummary({
+  target,
+  messages,
+  revisionText,
+}: {
+  target: PersonaFlowArtifactKind | 'persona'
+  messages: NormalizedMessage[]
+  revisionText: string
+}) {
+  if (target === 'problem_statements') {
+    return buildRevisedProblemStatementsSummary(messages, revisionText)
+  }
+
+  if (target === 'experience_keywords') {
+    return buildGenericRevisedVisualizationSummary({
+      baseSummary: findLatestVisualizationSummary(
+        messages,
+        /##\s*Keywords:\s*Experience/i
+      ),
+      fallbackHeading: '## Keywords: Experience',
+      revisionText,
+    })
+  }
+
+  if (target === 'relationship_keywords') {
+    return buildGenericRevisedVisualizationSummary({
+      baseSummary: findLatestVisualizationSummary(
+        messages,
+        /##\s*Keywords:\s*Relationship/i
+      ),
+      fallbackHeading: '## Keywords: Relationship',
+      revisionText,
+    })
+  }
+
+  return buildGenericRevisedVisualizationSummary({
+    baseSummary: findLatestVisualizationSummary(messages, /##\s*Persona Summary/i),
+    fallbackHeading: '## Persona Summary',
+    revisionText,
+  })
+}
+
+function buildRevisedDirectionVisualizationSummary({
+  target,
+  messages,
+  revisionText,
+}: {
+  target: DirectionResearchKind
+  messages: NormalizedMessage[]
+  revisionText: string
+}) {
+  const headingPattern =
+    target === 'market_size'
+      ? /##\s*시장\s*규모\s*리서치/i
+      : target === 'consumption_keywords'
+        ? /##\s*소비\s*트렌드\s*리서치/i
+        : /##\s*경쟁사\s*리서치/i
+  const fallbackHeading =
+    target === 'market_size'
+      ? '## 시장 규모 리서치'
+      : target === 'consumption_keywords'
+        ? '## 소비 트렌드 리서치'
+        : '## 경쟁사 리서치'
+
+  return buildGenericRevisedVisualizationSummary({
+    baseSummary: findLatestVisualizationSummary(messages, headingPattern),
+    fallbackHeading,
+    revisionText,
+  })
+}
+
+function buildRevisedStyleReferenceSummary({
+  messages,
+  revisionText,
+}: {
+  messages: NormalizedMessage[]
+  revisionText: string
+}) {
+  return buildGenericRevisedVisualizationSummary({
+    baseSummary: findLatestVisualizationSummary(
+      messages,
+      /##\s*선택한\s*스타일\s*레퍼런스/i
+    ),
+    fallbackHeading: '## 선택한 스타일 레퍼런스',
+    revisionText,
+  })
 }
 
 function getDirectionResearchKindFromText(text: string): DirectionResearchKind | null {
@@ -2154,7 +3549,12 @@ function extractDirectionSummaryFromVisualizationCommand(text: string) {
     .replace(/^시각화하기\s*/i, '')
     .replace(/<<AIDEE_DIRECTION_CARD:[\s\S]*?<<\/AIDEE_DIRECTION_CARD>>/g, '')
     .split('\n')
-    .filter((line) => !/아래의 시각화하기 버튼/.test(line))
+    .filter(
+      (line) =>
+        !/아래의 시각화하기 버튼|내용을\s*확인한\s*뒤\s*확정하기를\s*누르면\s*시각화하기\s*버튼이\s*나타납니다/.test(
+          line
+        )
+    )
     .join('\n')
     .trim()
 }
@@ -2208,8 +3608,6 @@ function buildDirectionResearchText({
       '**초기 판단**',
       '- 전체 시장보다 반복 사용 맥락이 선명한 세그먼트를 먼저 잡아야 합니다.',
       '- 시장 규모는 넓게 보되, 첫 제품은 작은 강한 니즈에서 출발하는 방향이 좋습니다.',
-      '',
-      '아래의 시각화하기 버튼을 누르면 Tam Sam Som 카드로 정리됩니다.',
     ].join('\n')
   }
 
@@ -2234,8 +3632,6 @@ function buildDirectionResearchText({
       '**3. 디자인/개발 시사점**',
       '- 기능 설명보다 사용 후 변화가 먼저 느껴져야 합니다.',
       '- 사용 부담이 낮고, 매일 반복해도 피로하지 않은 인터랙션이 중요합니다.',
-      '',
-      '아래의 시각화하기 버튼을 누르면 Keywords:Consumption 카드로 정리됩니다.',
     ].join('\n')
   }
 
@@ -2262,8 +3658,6 @@ function buildDirectionResearchText({
     '**초기 차별화 방향**',
     '- 기존 대안보다 사용 진입 장벽을 낮추고, 제품을 계속 쓰게 만드는 경험적 이유를 강화해야 합니다.',
     '- 경쟁사 대비 “매일 쓰기 쉬운 루틴 도구”라는 포지션이 유효합니다.',
-    '',
-    '아래의 시각화하기 버튼을 누르면 Positioning Map: Brand 카드로 정리됩니다.',
   ].join('\n')
 }
 
@@ -2331,6 +3725,33 @@ function buildDirectionFlowResponse({
       kind: forceKind,
       messages,
       summary: extractDirectionSummaryFromVisualizationCommand(lastUserMessage),
+    })
+  }
+
+  const revisionRequestTarget =
+    getVisualizationRevisionTargetFromText(lastUserMessage)
+  const recentRevisionTarget = getRecentVisualizationRevisionTarget(messages)
+
+  if (isDirectionVisualizationRevisionTarget(revisionRequestTarget)) {
+    return buildStageTextResponse({
+      text: buildVisualizationRevisionQuestion(revisionRequestTarget),
+      stageKey: 'step_3_direction',
+      reason: `${revisionRequestTarget}_revision_question`,
+    })
+  }
+
+  if (
+    isDirectionVisualizationRevisionTarget(recentRevisionTarget) &&
+    lastUserMessage.trim()
+  ) {
+    return buildStageTextResponse({
+      text: buildRevisedDirectionVisualizationSummary({
+        target: recentRevisionTarget,
+        messages,
+        revisionText: lastUserMessage,
+      }),
+      stageKey: 'step_3_direction',
+      reason: `${recentRevisionTarget}_revised_summary`,
     })
   }
 
@@ -2502,8 +3923,6 @@ function buildStyleReferenceProposal(lastUserMessage: string) {
     '**촉감/소재 방향**',
     '- 표면은 손이 자주 닿아도 피로하지 않은 매트하거나 은은한 질감을 우선합니다.',
     '- 제품이 놓이는 공간 안에서 조용하지만 분명한 존재감을 갖도록 CMF를 정리합니다.',
-    '',
-    '아래의 시각화하기 버튼을 누르면 선택한 방향을 기준으로 무드보드가 생성됩니다.',
   ].join('\n')
 }
 
@@ -2594,12 +4013,14 @@ async function buildStyleMoodboardResponse({
 async function buildStyleFlowResponse({
   project,
   referenceImages,
+  messages,
   lastUserMessage,
   forceImageGeneration,
   apiKey,
 }: {
   project: ProjectRecord | null
   referenceImages: ReferenceImageRecord[]
+  messages: NormalizedMessage[]
   lastUserMessage: string
   forceImageGeneration: ChatRequestBody['forceImageGeneration']
   apiKey: string
@@ -2610,6 +4031,29 @@ async function buildStyleFlowResponse({
       referenceImages,
       styleProposal: lastUserMessage,
       apiKey,
+    })
+  }
+
+  const revisionRequestTarget =
+    getVisualizationRevisionTargetFromText(lastUserMessage)
+  const recentRevisionTarget = getRecentVisualizationRevisionTarget(messages)
+
+  if (revisionRequestTarget === 'style_reference') {
+    return buildStageTextResponse({
+      text: buildVisualizationRevisionQuestion(revisionRequestTarget),
+      stageKey: 'step_4_style',
+      reason: 'style_reference_revision_question',
+    })
+  }
+
+  if (recentRevisionTarget === 'style_reference' && lastUserMessage.trim()) {
+    return buildStageTextResponse({
+      text: buildRevisedStyleReferenceSummary({
+        messages,
+        revisionText: lastUserMessage,
+      }),
+      stageKey: 'step_4_style',
+      reason: 'style_reference_revised_summary',
     })
   }
 
@@ -2673,7 +4117,8 @@ function buildInitialPrompt(project: ProjectRecord | null) {
 
   return [
     `${title} 프로젝트가 방금 생성되었습니다.`,
-    '저장된 프로젝트 정보(requirements)를 바탕으로 Project Direction 고정 템플릿을 출력하고, 아이디어 텍스트를 정리한 뒤 제품의 구체적인 모습이나 추가 설명이 있는지 질문하세요.',
+    '저장된 프로젝트 정보(requirements)를 바탕으로 Project Direction 고정 템플릿을 출력하고, 아이디어 텍스트는 한국어 100단어 이내 문장으로 정리한 뒤 제품의 구체적인 모습이나 추가 설명이 있는지 질문하세요.',
+    'Project Direction의 고정 표시 라벨은 Target Timeline, Project Scope, Key Features입니다. 제품 카테고리와 최소 예산은 별도 소제목 없이 보여주세요.',
     '답변은 한국어로 작성하세요.',
     '이 턴에서는 전체 프로세스 단계 설명을 하지 마세요.',
   ].join('\n')
@@ -2720,8 +4165,9 @@ function getStageSpecificInstruction(currentStageKey: StageKey) {
 [현재 단계 운영]
 - 지금은 STEP 0 프로젝트 시작 공통 확인 구간입니다.
 - 프로젝트 생성 직후에는 먼저 Project Direction 고정 템플릿으로 저장된 정보를 기준점으로 정리하고, 제품의 구체적인 모습이나 추가 설명이 있는지 질문 1개로 끝내세요.
+- Project Direction의 고정 표시 라벨은 Target Timeline, Project Scope, Key Features입니다. 제품 카테고리와 최소 예산은 별도 소제목 없이 보여주고, 아이디어 텍스트는 한국어 100단어 이내 문장으로 정리하세요.
 - 사용자의 추가 입력을 받은 뒤에는 전체 내용(프로젝트 목표, 제품 카테고리, 예산/기간 범위, 최종 활용 목적)을 정리하고, 프로세스 확인하기 버튼을 안내하세요.
-- 사용자가 프로세스 확인하기를 선택하기 전에는 전체 프로세스 0~7단계를 설명하지 마세요.
+- 사용자가 프로세스 확인하기를 선택하기 전에는 전체 프로세스 1~7단계를 설명하지 마세요.
 - 전체 톤은 친절하고 차분하게 유지하세요.
 - STEP 0에서는 Persona Card를 절대 출력하지 마세요.
 `.trim()
@@ -2739,9 +4185,15 @@ function getStageSpecificInstruction(currentStageKey: StageKey) {
 - 지금은 STEP 2 사용자 명확화 단계입니다.
 - 이 단계는 Problem Statements → Keywords: Experience → Keywords: Relationship → Persona Summary → Persona Card 순서로 진행합니다.
 - Problem Statements는 현재 상황, 불편함, 근본적 니즈를 직접 묻지 말고 여러 사용 장면 질문을 통해 도출합니다.
+- Problem Statements 카드는 01. Context, 02. Problems, 03. Needs로 구성하고, 각 항목은 소제목 1개와 약 2줄 설명으로 작성합니다.
+- Problem Statements의 소제목은 설명 내용을 짧게 요약한 완결된 문구여야 하며, 설명과 같은 문장을 반복하거나 중간에서 끊긴 문구로 쓰지 않습니다.
 - Problem Statements 카드가 만들어진 뒤에는 사용자가 확정하기를 누르기 전까지 다음 질문으로 넘어가지 않습니다.
+- Keywords: Experience는 감정, 행동, 공간 관점에서 각각 1개씩만 묻지 말고 총 9개 질문을 이어간 뒤, 감정 12개 + 행동 12개 + 공간 8개 = 총 32개 키워드로 정리합니다.
+- Keywords: Experience와 Keywords: Relationship에 정리되는 각 키워드는 최대 10글자 이내의 짧은 명사형/구 형태로 작성합니다.
+- Keywords: Experience 질문을 사용자에게 보여줄 때는 "감정 1", "행동 2", "공간 3" 같은 관점/번호 라벨을 질문 앞에 붙이지 않습니다.
+- Keywords: Experience 요약에는 키워드 정리가 완료되었다는 문구만 출력하고, 버튼 안내 문장은 본문에 쓰지 않습니다.
 - 한 번에 질문은 1개만 합니다.
-- 각 묶음의 텍스트 정리 뒤에는 사용자가 시각화하기 버튼을 누른 다음에만 다음 묶음으로 이어갑니다.
+- 각 묶음의 텍스트 정리 뒤에는 수정하기와 확정하기 버튼을 먼저 제공하고, 사용자가 확정하기를 누른 뒤 나타나는 시각화하기 버튼을 눌렀을 때만 다음 묶음으로 이어갑니다.
 - Persona Card에는 Demographic Info, Persona Story, Problem & Needs, Current Behavior, Lifestyle Context, Relationship Keyword가 들어갑니다.
 `.trim()
     case 'step_2_research':
@@ -2757,7 +4209,7 @@ function getStageSpecificInstruction(currentStageKey: StageKey) {
 - 지금은 STEP 3 디자인/개발 방향성 도출 단계입니다.
 - 이 단계는 1. 시장 규모, 2. 소비 트렌드, 3. 경쟁사 위젯으로 나누어 진행합니다.
 - 사용자가 위젯을 누르면 해당 항목에 대해 텍스트 리서치를 제공합니다.
-- 각 리서치 아래에는 시각화하기 버튼이 제공됩니다.
+- 각 리서치 아래에는 수정하기와 확정하기 버튼이 먼저 제공되고, 확정 후 시각화하기 버튼이 제공됩니다.
 - 시장 규모는 Tam Sam Som 카드, 소비 트렌드는 Keywords:Consumption 카드, 경쟁사는 Positioning Map: Brand 카드로 시각화합니다.
 - 세 카드가 모두 만들어진 뒤에만 STEP 4 스타일 컨셉 도출 단계로 넘어갈지 묻습니다.
 `.trim()
@@ -2769,7 +4221,7 @@ function getStageSpecificInstruction(currentStageKey: StageKey) {
 - 각 항목에는 30개 키워드를 제시하고 사용자는 최대 5개까지 선택합니다.
 - 선택 키워드를 종합하여 이미지가 보이는 스타일 분위기 위젯 3개를 제안합니다.
 - 사용자가 스타일 위젯 1개를 선택하면 선택한 스타일 레퍼런스를 텍스트로 정리합니다.
-- 텍스트 아래의 시각화하기 버튼을 누르면 무드보드를 생성하고, 이후 STEP 5로 넘어갈지 묻습니다.
+- 텍스트 아래의 수정하기와 확정하기 버튼을 먼저 제공하고, 확정 후 시각화하기 버튼으로 무드보드를 생성한 뒤 STEP 5로 넘어갈지 묻습니다.
 `.trim()
     case 'step_5_design':
     return `
@@ -2944,8 +4396,8 @@ function normalizeChoiceFormatting(text: string) {
       }
 
       const looksLikeStepLine = (line: string) =>
-        /^\s*(?:STEP\s*)?[1-6][.)]\s+/.test(line) ||
-        /^\s*[1-6][.)]\s*(?:제품 아이디어|사용자 명확화|디자인\/개발|스타일 컨셉|디자인 제안|평가 및 RFP)/.test(
+        /^\s*(?:STEP\s*)?[1-7][.)]\s+/.test(line) ||
+        /^\s*[1-7][.)]\s*(?:제품 아이디어|사용자 명확화|디자인\/개발|스타일 컨셉|디자인 제안|평가 및 RFP|협력업체)/.test(
           line
         )
 
@@ -3549,6 +5001,7 @@ export async function POST(req: Request) {
         messages: normalizedMessages,
         forceImageGeneration,
         lastUserMessage,
+        project,
       })
 
       if (personaFlowResponse) {
@@ -3569,6 +5022,7 @@ export async function POST(req: Request) {
       return await buildStyleFlowResponse({
         project,
         referenceImages,
+        messages: normalizedMessages,
         lastUserMessage,
         forceImageGeneration,
         apiKey,
@@ -3964,7 +5418,7 @@ export async function POST(req: Request) {
       shouldHandlePersonaCardCandidate &&
       !getPersonaClarificationStatus(personaContextForCard).isComplete
     ) {
-      finalText = buildPersonaClarificationQuestion(personaContextForCard)
+      finalText = buildPersonaClarificationQuestion(personaContextForCard, project)
     } else if (
       shouldHandlePersonaCardCandidate
     ) {

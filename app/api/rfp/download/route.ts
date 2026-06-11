@@ -301,9 +301,9 @@ export async function POST(request: Request) {
     })
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : 'Failed to generate RFP PDF'
+      error instanceof Error ? error.message : 'Failed to generate project plan PDF'
 
-    console.error('RFP PDF error:', error)
+    console.error('Project plan PDF error:', error)
 
     return new Response(JSON.stringify({ error: message }), {
       status: 500,

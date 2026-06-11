@@ -599,15 +599,15 @@ function stripDirectionInternalBlocks(content: string) {
 }
 
 function getDirectionResearchKind(content: string): DirectionArtifactKind | null {
-  if (/##\s*시장\s*규모\s*리서치/i.test(content)) {
+  if (/##\s*(?:시장\s*규모\s*리서치|Tam\s*Sam\s*Som)/i.test(content)) {
     return 'market_size'
   }
 
-  if (/##\s*소비\s*트렌드\s*리서치/i.test(content)) {
+  if (/##\s*(?:소비\s*트렌드\s*리서치|Keywords\s*:\s*Consumption)/i.test(content)) {
     return 'consumption_keywords'
   }
 
-  if (/##\s*경쟁사\s*리서치/i.test(content)) {
+  if (/##\s*(?:경쟁사\s*리서치|Positioning\s*Map\s*:\s*Brand)/i.test(content)) {
     return 'brand_positioning'
   }
 
@@ -646,7 +646,23 @@ function isStyleReferenceProposal(content: string) {
   return /##\s*선택한\s*스타일\s*레퍼런스/i.test(content)
 }
 
+function isPersonaClarificationQuestionText(content: string) {
+  const normalized = content.replace(/\s+/g, ' ').trim()
+  const hasHintChoices = splitAssistantChoices(content).choices.length > 0
+
+  return (
+    hasHintChoices &&
+    /(?:페르소나\s*카드를\s*만들기\s*전에|사용자를\s*조금\s*더\s*구체화|사용자의\s*기본\s*윤곽|사용\s*장면이\s*필요|불편함을\s*좁히|문제\s*상황까지\s*잡혔|나이대와\s*직업|가장\s*필요로\s*하는\s*순간|크게\s*불편해하는\s*점|가장\s*먼저\s*볼\s*기준)/.test(
+      normalized
+    )
+  )
+}
+
 function isPersonaSummaryText(content: string) {
+  if (isPersonaClarificationQuestionText(content)) {
+    return false
+  }
+
   return (
     Boolean(getPersonaArtifactKind(content)) ||
     /사용자\s*정리|사용\s*상황|핵심\s*문제|성공\s*기준|선택\s*기준/.test(
@@ -1880,6 +1896,132 @@ function DirectionResearchCard({
     .join('\n')
     .trim()
 
+  if (kind === 'brand_positioning') {
+    const getQuadrantBrands = (label: string, fallback: string[]) => {
+      const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const match = body.match(
+        new RegExp(
+          `\\*\\*${escapedLabel}\\*\\*[\\s\\S]*?경쟁사\\s*브랜드\\s*:\\s*([^\\n]+)`,
+          'i'
+        )
+      )
+
+      if (!match) {
+        return fallback
+      }
+
+      const parsed = match[1]
+        .split(',')
+        .map((brand) => brand.trim())
+        .filter(Boolean)
+
+      return parsed.length >= 2 ? parsed.slice(0, 2) : fallback
+    }
+
+    const quadrantBrands: Array<{
+      title: string
+      description: string
+      brands: string[]
+      className: string
+    }> = [
+      {
+        title: '1사분면 · 프리미엄 라이프스타일형',
+        description: '디자인 완성도 · 브랜드 감성 · 소장 가치',
+        brands: getQuadrantBrands('프리미엄 라이프스타일형', [
+          'Dyson',
+          'Apple',
+        ]),
+        className: 'col-start-1 row-start-1 border-rose-200 bg-rose-50',
+      },
+      {
+        title: '2사분면 · 합리적 라이프스타일형',
+        description: '공간 분위기 · 취향 반영 · 접근 가능한 가격',
+        brands: getQuadrantBrands('합리적 라이프스타일형', ['MUJI', 'IKEA']),
+        className: 'col-start-2 row-start-1 border-amber-200 bg-amber-50',
+      },
+      {
+        title: '3사분면 · 합리적 기능형',
+        description: '낮은 가격 · 기본 기능 · 실용 구매',
+        brands: getQuadrantBrands('합리적 기능형', ['Xiaomi', 'Govee']),
+        className: 'col-start-2 row-start-2 border-sky-200 bg-sky-50',
+      },
+      {
+        title: '4사분면 · 프리미엄 기능형',
+        description: '성능 · 정확성 · 기술 신뢰도',
+        brands: getQuadrantBrands('프리미엄 기능형', ['Philips Hue', 'Garmin']),
+        className: 'col-start-1 row-start-2 border-violet-200 bg-violet-50',
+      },
+    ]
+
+    return (
+      <div className="my-3 w-full max-w-[680px] rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-base font-bold text-neutral-900">
+            Positioning Map: Brand
+          </h3>
+          <span className="rounded-full border border-rose-200 bg-rose-50/70 px-2.5 py-1 text-[11px] font-bold text-rose-700">
+            STEP 3
+          </span>
+        </div>
+
+        <div className="mb-3 rounded-md bg-slate-50 px-3 py-2 text-xs font-semibold leading-5 text-slate-600">
+          X축: 프리미엄 가격 ↔ 합리적 가격
+          <br />
+          Y축: 기능 중심 ↔ 라이프스타일 중심
+        </div>
+
+        <div className="relative grid min-h-[420px] grid-cols-2 grid-rows-2 gap-2 rounded-lg border border-slate-200 bg-white p-6">
+          <div className="pointer-events-none absolute left-1/2 top-6 bottom-6 w-px bg-slate-300" />
+          <div className="pointer-events-none absolute top-1/2 left-6 right-6 h-px bg-slate-300" />
+          <div className="pointer-events-none absolute left-1/2 top-2 -translate-x-1/2 text-[10px] font-bold text-slate-400">
+            라이프스타일 중심
+          </div>
+          <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 text-[10px] font-bold text-slate-400">
+            기능 중심
+          </div>
+          <div className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 -rotate-90 text-[10px] font-bold text-slate-400">
+            프리미엄 가격
+          </div>
+          <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rotate-90 text-[10px] font-bold text-slate-400">
+            합리적 가격
+          </div>
+          {quadrantBrands.map((quadrant) => (
+            <div
+              key={quadrant.title}
+              className={`relative rounded-md border p-3 ${quadrant.className}`}
+            >
+              <div className="text-sm font-bold text-neutral-900">
+                {quadrant.title}
+              </div>
+              <div className="mt-1 text-[11px] font-medium leading-4 text-slate-500">
+                {quadrant.description}
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {quadrant.brands.map((brand) => (
+                  <span
+                    key={brand}
+                    className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-slate-700 shadow-sm"
+                  >
+                    {brand}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className="absolute left-[58%] top-[34%] rounded-full bg-blue-600 px-3 py-1.5 text-xs font-bold text-white shadow-lg">
+            OUR BRAND
+          </div>
+        </div>
+
+        <div className="mt-3 text-sm leading-6 text-slate-700">
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+            {body}
+          </ReactMarkdown>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="my-3 w-full max-w-[680px] rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -1907,36 +2049,36 @@ const STYLE_KEYWORD_GROUPS = [
     title: '1. 이 제품을 사용할 때 어떤 기분이 들었으면 좋겠나요?',
     label: '감정 키워드',
     keywords: [
-      '평온한',
-      '개운한',
-      '성취감 있는',
-      '안정적인',
       '차분한',
-      '산뜻한',
-      '따뜻한',
-      '집중되는',
-      '가벼운',
-      '정돈된',
-      '믿음직한',
-      '섬세한',
-      '명료한',
       '편안한',
-      '리듬감 있는',
-      '기분 전환',
-      '몰입감 있는',
-      '부담 없는',
+      '안정적인',
+      '따뜻한',
       '고요한',
-      '활력 있는',
-      '절제된',
+      '산뜻한',
+      '경쾌한',
+      '정돈된',
+      '활기찬',
+      '몰입감 있는',
+      '섬세한',
       '부드러운',
+      '세련된',
       '신뢰감 있는',
-      '영감을 주는',
-      '상쾌한',
-      '자기조절',
-      '균형감 있는',
       '친근한',
-      '프리미엄한',
-      '일상적인',
+      '감각적인',
+      '위로가 되는',
+      '자기주도적인',
+      '특별한',
+      '영감을 주는',
+      '평온한',
+      '상쾌한',
+      '균형감 있는',
+      '명료한',
+      '절제된',
+      '부담 없는',
+      '집중되는',
+      '개운한',
+      '믿음직한',
+      '자연스러운',
     ],
   },
   {
@@ -1944,36 +2086,36 @@ const STYLE_KEYWORD_GROUPS = [
     title: '2. 제품의 색감은 어떤 분위기에 가까우면 좋을까요?',
     label: '색감 키워드',
     keywords: [
-      '뉴트럴',
+      '뉴트럴/베이지',
+      '소프트 화이트',
+      '모노톤',
+      '비비드/원색',
+      '딥/다크 톤',
+      '자연의 색',
+      '네온/형광',
+      '따뜻한',
+      '톤온톤',
+      '투명한',
+      '뮤트 톤',
+      '메탈릭',
+      '그라데이션',
+      '웜톤',
+      '쿨톤',
+      '포인트 컬러',
+      '빈티지/세피아',
+      '세이지 그린',
+      '더스티 블루',
+      '붉은색',
       '웜 그레이',
       '쿨 그레이',
       '오프화이트',
       '크림 톤',
-      '소프트 블루',
-      '딥 블루',
-      '세이지 그린',
-      '올리브',
-      '민트',
-      '라이트 베이지',
-      '샌드',
       '차콜',
-      '블랙 포인트',
       '실버',
-      '라벤더',
       '코랄',
-      '테라코타',
-      '머스타드',
+      '올리브',
       '파우더 핑크',
-      '모노톤',
-      '저채도',
-      '고명도',
-      '매트 컬러',
-      '반투명 톤',
-      '자연색',
       '우드 톤',
-      '메탈릭',
-      '클린 화이트',
-      '포인트 컬러',
     ],
   },
   {
@@ -1981,36 +2123,36 @@ const STYLE_KEYWORD_GROUPS = [
     title: '3. 제품의 형태는 어떤 인상에 가까우면 좋을까요?',
     label: '형태 키워드',
     keywords: [
+      '미니멀한',
+      '부드러운 곡선',
+      '정제된',
+      '단순한',
       '둥근',
-      '간결한',
-      '슬림한',
-      '컴팩트한',
-      '단단한',
-      '유선형',
-      '기하학적',
-      '부드러운 모서리',
-      '납작한',
-      '세로형',
-      '가로형',
-      '모듈형',
-      '쌓이는',
-      '접히는',
-      '손에 잡히는',
-      '오브제 같은',
-      '조형적인',
-      '균형 잡힌',
-      '비대칭',
+      '절제된 직선',
+      '안정적인 비례',
       '대칭적인',
-      '미니멀',
+      '컴팩트한',
+      '비대칭적인',
+      '슬림한',
+      '정밀한',
+      '일체형',
+      '맥시멀한',
+      '유기적인',
+      '기하학적인',
+      '오브제형',
+      '손에 잡히는',
+      '조형적인',
+      '간결한',
+      '유선형',
+      '모듈형',
       '아이코닉',
       '직관적인',
       '공간 절약',
       '스탠드형',
       '플랫한',
       '입체적인',
-      '부피감 있는',
+      '균형 잡힌',
       '가벼워 보이는',
-      '안정감 있는',
     ],
   },
   {
@@ -2019,35 +2161,35 @@ const STYLE_KEYWORD_GROUPS = [
     label: '촉감 키워드',
     keywords: [
       '매트한',
-      '부드러운',
-      '보송한',
-      '차가운',
+      '소프트 터치',
+      '실키한',
+      '단단한',
+      '가벼운',
       '따뜻한',
-      '매끈한',
-      '세밀한',
-      '러버라이즈드',
-      '패브릭',
-      '우드',
-      '세라믹',
-      '메탈',
+      '차가운',
+      '반투명한',
+      '투명한',
+      '빛을 확산하는',
+      '은은하게 빛나는',
+      '세라믹 같은',
+      '알루미늄 느낌',
+      '미세한 텍스처',
+      '패브릭 느낌',
+      '우드 느낌',
+      '고무 코팅 느낌',
+      '메탈릭한',
+      '매끄러운',
+      '내구성 있는',
+      '보송한',
       '무광 플라스틱',
-      '반투명',
       '미끄럼 방지',
       '그립감 있는',
       '탄성 있는',
-      '단단한',
-      '가벼운',
       '묵직한',
       '자연 질감',
-      '샌딩감',
-      '소프트 터치',
-      '프리미엄 마감',
       '생활 방수',
       '스크래치에 강한',
       '지문이 덜 남는',
-      '촉촉한 광택',
-      '조용한 클릭감',
-      '손때가 편한',
     ],
   },
 ] as const
@@ -2250,7 +2392,7 @@ function getStageExperts(stageKey: StageKey): ExpertKey[] {
 function getStageLabel(stageKey: StageKey) {
   return (
     STAGE_DEFINITIONS.find((stage) => stage.key === stageKey)?.sidebarLabel ??
-    '제품 아이디어&개발 조건 정리'
+    '개발 조건 정리'
   )
 }
 
@@ -2328,7 +2470,7 @@ function buildCompanyRecommendations(
 ): CompanyRecommendation[] {
   const styleHint =
     rfpJson?.styleKeywords.slice(0, 2).join(' · ') ||
-    (rfpContent ? 'RFP 기준' : '프로젝트 기준')
+    (rfpContent ? '기획안 기준' : '프로젝트 기준')
   const targetHint =
     rfpJson?.mainTarget.slice(0, 20) ||
     rfpJson?.projectGoal.slice(0, 20) ||
@@ -2371,7 +2513,7 @@ function CompanyRecommendationsPanel({
   return (
     <div className="flex flex-col gap-4">
       <div className="max-w-[602px] rounded-[24px] rounded-tl-none bg-gray-200 p-5 text-base leading-relaxed font-medium text-neutral-900">
-        마지막은 시제품 제작에 필요한 협력 업체를 추천해드리는 시간입니다.
+        마지막은 시제품 제작에 필요한 협력 파트너를 추천해드리는 시간입니다.
         앞서 정리한 요구사항과 디자인 방향을 기준으로 3곳을 제안합니다.
       </div>
 
@@ -2412,7 +2554,7 @@ function CompanyRecommendationsPanel({
         type="button"
         className="inline-flex w-fit items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-200"
       >
-        업체 더 보기
+        파트너 더 보기
         <span className="text-blue-500">›</span>
       </button>
     </div>
@@ -2436,7 +2578,7 @@ function RfpActionPanel({
         disabled={isDownloadingRfp || isLoading}
         className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isDownloadingRfp ? 'RFP 생성 중...' : 'RFP 다운로드'}
+        {isDownloadingRfp ? '기획안 생성 중...' : '기획안 다운로드'}
       </button>
     </div>
   )
@@ -3095,13 +3237,13 @@ export default function ChatPage({
       })
 
       if (!response.ok) {
-        let errorMessage = `RFP download failed: ${response.status}`
+        let errorMessage = `Project plan download failed: ${response.status}`
         const rawText = await response.text()
 
         try {
           const parsed = JSON.parse(rawText) as { error?: string }
           errorMessage = parsed.error
-            ? `RFP download failed: ${parsed.error}`
+            ? `Project plan download failed: ${parsed.error}`
             : `${errorMessage} ${rawText}`
         } catch {
           errorMessage = `${errorMessage} ${rawText}`
@@ -3114,7 +3256,7 @@ export default function ChatPage({
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `${projectTitle || 'aidee-rfp'}.pdf`
+      link.download = `${projectTitle || 'aidee-project-plan'}.pdf`
       document.body.appendChild(link)
       link.click()
       link.remove()
@@ -3124,7 +3266,7 @@ export default function ChatPage({
       alert(
         error instanceof Error
           ? error.message
-          : 'RFP PDF를 생성하지 못했습니다.'
+          : '기획안 PDF를 생성하지 못했습니다.'
       )
     } finally {
       setIsDownloadingRfp(false)
@@ -3479,6 +3621,16 @@ export default function ChatPage({
   const buildClientStageTransitionPrompt = (nextStageKey: StageKey) => {
     const step = getProcessStepForStage(nextStageKey)
 
+    if (nextStageKey === 'step_3_direction') {
+      return [
+        '<<AIDEE_DIRECTION_WIDGETS>>',
+        '<</AIDEE_DIRECTION_WIDGETS>>',
+        '',
+        `STEP ${step.index}. ${step.title} 단계로 넘어왔습니다.`,
+        '화면의 세 가지 위젯 중 궁금한 항목을 눌러주세요.',
+      ].join('\n')
+    }
+
     return [
       `다음으로 STEP ${step.index}. ${step.title} 단계로 넘어가겠습니다.`,
       `이 단계에서는 ${step.description}`,
@@ -3491,30 +3643,31 @@ export default function ChatPage({
       return
     }
 
-    const nextStageKey = 'step_3_direction'
-    const userMessage = {
+    const nextStageKey: StageKey = 'step_3_direction'
+    const now = new Date().toISOString()
+    const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: '페르소나 카드를 확정합니다.',
       active_agent: 'aidee',
-      created_at: new Date().toISOString(),
+      created_at: now,
       stage_key: currentStageKey,
     }
-    const assistantMessage = {
+    const assistantMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'assistant',
       content: buildClientStageTransitionPrompt(nextStageKey),
       active_agent: 'aidee',
       created_at: new Date().toISOString(),
-      stage_key: currentStageKey,
+      stage_key: nextStageKey,
     }
 
     setConfirmedPersonaMessageIds((prev) => ({
       ...prev,
       [messageId]: true,
     }))
-    setPendingNextStageKey(nextStageKey)
     setMessages((prev) => [...prev, userMessage, assistantMessage])
+    setIsLoading(true)
 
     try {
       await insertMessage({
@@ -3522,6 +3675,7 @@ export default function ChatPage({
         content: userMessage.content,
         activeAgent: 'aidee',
       })
+      await transitionStage(nextStageKey, 'persona_card_confirmed')
       await insertMessage({
         role: 'assistant',
         content: assistantMessage.content,
@@ -3529,6 +3683,9 @@ export default function ChatPage({
       })
     } catch (error) {
       console.error(error)
+    } finally {
+      setLoadingLabelOverride(null)
+      setIsLoading(false)
     }
   }
 
@@ -3630,7 +3787,7 @@ export default function ChatPage({
     directionContent: string,
     directionKind: DirectionArtifactKind
   ) => {
-    if (isLoading || !sessionId || !confirmedVisualizationMessageIds[messageId]) {
+    if (isLoading || !sessionId) {
       return
     }
 
@@ -4479,7 +4636,9 @@ export default function ChatPage({
                     </button>
                   </div>
                 ) : null}
-                {showVisualizationGate && visualizationLabel ? (
+                {showVisualizationGate &&
+                visualizationLabel &&
+                !canVisualizeDirectionArtifact ? (
                   <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
                     <button
                       type="button"
@@ -4520,8 +4679,7 @@ export default function ChatPage({
                 ) : null}
                 {directionResearchKind ? (
                   <div className="mt-2 flex max-w-[602px] flex-wrap gap-2">
-                    {!directionResearchWasVisualized &&
-                    visualizationMessageConfirmed ? (
+                    {!directionResearchWasVisualized ? (
                       <button
                         type="button"
                         disabled={isLoading}

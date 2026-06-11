@@ -26,8 +26,8 @@ export const STAGE_DEFINITIONS: Array<{
   },
   {
     key: 'step_1_idea',
-    label: '제품 아이디어 및 개발 조건 정리',
-    sidebarLabel: '제품 아이디어 및 개발 조건 정리',
+    label: '개발 조건 정리',
+    sidebarLabel: '개발 조건 정리',
     sidebarIndex: 1,
   },
   {
@@ -45,7 +45,7 @@ export const STAGE_DEFINITIONS: Array<{
   {
     key: 'step_3_direction',
     label: '디자인·기능 방향 정리',
-    sidebarLabel: '디자인/개발 방향성 도출',
+    sidebarLabel: '개발 방향성 도출',
     sidebarIndex: 3,
   },
   {
@@ -62,38 +62,38 @@ export const STAGE_DEFINITIONS: Array<{
   },
   {
     key: 'step_5_design',
-    label: '디자인 제안',
-    sidebarLabel: '디자인 제안',
+    label: '디자인 시안 확정',
+    sidebarLabel: '디자인 시안 확정',
     sidebarIndex: 5,
   },
   {
     key: 'step_5_rfp',
-    label: '평가 및 제품개발 기획안 생성',
-    sidebarLabel: '평가 및 제품개발 기획안 생성',
+    label: '프로젝트 기획안 생성',
+    sidebarLabel: '프로젝트 기획안 생성',
     sidebarIndex: 6,
   },
   {
     key: 'step_6_rfp',
-    label: '평가 및 제품개발 기획안 생성',
-    sidebarLabel: '평가 및 제품개발 기획안 생성',
+    label: '프로젝트 기획안 생성',
+    sidebarLabel: '프로젝트 기획안 생성',
     sidebarIndex: 6,
   },
   {
     key: 'step_6_company',
-    label: '협력업체 연결',
-    sidebarLabel: '협력업체 연결',
+    label: '협력 파트너 매칭',
+    sidebarLabel: '협력 파트너 매칭',
     sidebarIndex: 7,
   },
 ]
 
 export const SIDEBAR_STEPS = [
-  '제품 아이디어 및 개발 조건 정리',
+  '개발 조건 정리',
   '사용자 명확화',
-  '디자인/개발 방향성 도출',
+  '개발 방향성 도출',
   '스타일 컨셉 도출',
-  '디자인 제안',
-  '평가 및 제품개발 기획안 생성',
-  '협력업체 연결',
+  '디자인 시안 확정',
+  '프로젝트 기획안 생성',
+  '협력 파트너 매칭',
 ]
 
 const NEXT_STAGE_KEY_MAP: Record<StageKey, StageKey | null> = {
@@ -118,7 +118,7 @@ export const PROCESS_STEPS: Array<{
 }> = [
   {
     index: 1,
-    title: '제품 아이디어 및 개발 조건 정리',
+    title: '개발 조건 정리',
     description: '제품 목표, 조건, 제약을 실행 가능한 기획 기준으로 정리합니다.',
     stageKeys: ['step_1_idea'],
   },
@@ -130,7 +130,7 @@ export const PROCESS_STEPS: Array<{
   },
   {
     index: 3,
-    title: '디자인/개발 방향성 도출',
+    title: '개발 방향성 도출',
     description: '가치 우선순위와 기능·개발 방향을 함께 좁힙니다.',
     stageKeys: ['step_3_direction'],
   },
@@ -142,20 +142,20 @@ export const PROCESS_STEPS: Array<{
   },
   {
     index: 5,
-    title: '디자인 제안',
+    title: '디자인 시안 확정',
     description: '선택한 방향을 기준으로 제품 디자인 시안을 제안합니다.',
     stageKeys: ['step_5_design'],
   },
   {
     index: 6,
-    title: '평가 및 제품개발 기획안 생성',
+    title: '프로젝트 기획안 생성',
     description: '확정된 내용을 평가하고 제품개발 기획안으로 문서화합니다.',
     stageKeys: ['step_6_rfp', 'step_5_rfp'],
   },
   {
     index: 7,
-    title: '협력업체 연결',
-    description: '제품개발 기획안을 기준으로 협력업체 연결 방향을 정리합니다.',
+    title: '협력 파트너 매칭',
+    description: '제품개발 기획안을 기준으로 협력 파트너 매칭 방향을 정리합니다.',
     stageKeys: ['step_6_company'],
   },
 ]
